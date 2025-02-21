@@ -120,3 +120,9 @@ c1.unregister();
 c2.unregister();
 client.disconnect();
 ```
+
+## Contributing
+We welcome contributions! Please fork the repository and submit pull requests. Ensure your code follows the existing style and includes tests for any new functionality.
+
+## License
+This project is licensed under the MIT License. See the LICENSE file for more details.
