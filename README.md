@@ -2,6 +2,8 @@
 
 I made this client because I could not find a client that supported my requirements calling a complex backend written in SignalR. My biggest issue that I could not overcome was that the existing client I found did not support WASM. It is bound to tokio and I could not build it to wasm32 targets. This package was designed to overcome this limitation. It supports WebAssembly targets out of the box.
 
+ Read more about SignalR in the [`offical documentation`](https://learn.microsoft.com/en-us/aspnet/core/signalr/introduction?view=aspnetcore-9.0).
+
 I tried to design this package to be simple and convenient to use without writing boilerpart code. Please be free to comment or post issues if you have recommendations or requirements. Contribution is also welcome.
 
 A .NET test backend is also provided for testing purposes (see the /dotnet folder). The tests in the package should run using that backend. Authorization is not tested with the test scenairo, however it's been tested already by using this package in a much larger project of mine. So, it should also work without issues.
@@ -126,6 +128,10 @@ c1.unregister();
 c2.unregister();
 client.disconnect();
 ```
+
+## Acknowledgements
+
+Special thanks to the ['maintainer of the signalrs package'](https://github.com/szarykott) for his invaluable inspiration and work in the first SignalR client. Their efforts have significantly contributed to the development of this package.
 
 ## Contributing
 Contributions are welcome! Please fork the repository and submit pull requests along with an issue or some explanation. Ensure your code follows the existing style and includes tests for any new functionality. 
