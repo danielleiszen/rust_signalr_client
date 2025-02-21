@@ -1,4 +1,10 @@
-# Cargo Package Documentation
+# SignalR client for Rust 
+
+I made this client because I could not find a client that supported my requirements calling a complex backend written in SignalR. My biggest issue that I could not overcome was that the existing client I found did not support WASM. It is bound to tokio and I could not build it to wasm32 targets. This package was designed to overcome this limitation. It supports WebAssembly targets out of the box.
+
+I tried to design this package to be simple and convenient to use without writing boilerpart code. Please be free to comment or post issues if you have recommendations or requirements. Contribution is also welcome.
+
+A .NET test backend is also provided for testing purposes (see the /dotnet folder). The tests in the package should run using that backend. Authorization is not tested with the test scenairo, however it's been tested already by using this package in a much larger project of mine. So, it should also work without issues.
 
 ## Package Overview
 signalr-client is a Rust library designed to provide a way to call SignalR hubs from a Rust cross-platform application. It supports tokio based async runtimes and WASM clients, making it versatile for various environments.
@@ -122,7 +128,7 @@ client.disconnect();
 ```
 
 ## Contributing
-We welcome contributions! Please fork the repository and submit pull requests. Ensure your code follows the existing style and includes tests for any new functionality.
+Contributions are welcome! Please fork the repository and submit pull requests along with an issue or some explanation. Ensure your code follows the existing style and includes tests for any new functionality. 
 
 ## License
 This project is licensed under the MIT License. See the LICENSE file for more details.

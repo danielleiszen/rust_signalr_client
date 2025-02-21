@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+  <style>
+    body {
+      padding: 0px;
+      margin: 0px;
+      max-width: none;
+      background: #3e63a8;
+      color: white;
+      text-align: center;
+      margin: 0px auto;
+      min-height: 100vh;
+    }
+  
+    #container {
+      display: grid;
+      justify-items: stretch;
+      align-content: stretch;
+      align-items: stretch;
+      flex-direction: column;
+      width: 100vw;
+      height: 100vh;
+      padding: 0px;
+      margin: 0px;
+      grid-template-columns: auto;
+      grid-template-rows: max-content auto max-content;
+    }
+  
+    canvas:focus {
+      touch-action: none;
+      outline: none;
+    }
+  
+  </style>
+
+<head>
+  
+<script type="module" nonce="pnhc3lhdisEhinE8yHF4yQ==">
+import init, * as bindings from '/signalr-client-e52e3032adb52bef.js';
+const wasm = await init('/signalr-client-e52e3032adb52bef_bg.wasm');
+
+
+window.wasmBindings = bindings;
+
+
+dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
+
+</script>
+  <meta charset="utf-8"/>
+  <title>SignalR client</title>
+
+<link rel="modulepreload" href="/signalr-client-e52e3032adb52bef.js" crossorigin=anonymous integrity="sha384-n1n1MSugK7Dkso/4TDoU9YWIU/IVjB2uQQcu3myiJRHsgWwgZw6EALdxeT32zzcZ">
+<link rel="preload" href="/signalr-client-e52e3032adb52bef_bg.wasm" crossorigin=anonymous integrity="sha384-PEtV9VaBvpXzTK8+u+DiyOWt5DQwxA/NL25OeL7wMKDu9/SzHi6xF41l0DvWysIT" as="fetch" type="application/wasm"></head>
+<body>
+  <div id="container">
+    <canvas id="canvas"></canvas>
+  </div>
+</body>
+</html>

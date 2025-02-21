@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+  <style>
+    body {
+      padding: 0px;
+      margin: 0px;
+      max-width: none;
+      background: #3e63a8;
+      color: white;
+      text-align: center;
+      margin: 0px auto;
+      min-height: 100vh;
+    }
+  
+    #container {
+      display: grid;
+      justify-items: stretch;
+      align-content: stretch;
+      align-items: stretch;
+      flex-direction: column;
+      width: 100vw;
+      height: 100vh;
+      padding: 0px;
+      margin: 0px;
+      grid-template-columns: auto;
+      grid-template-rows: max-content auto max-content;
+    }
+  
+    canvas:focus {
+      touch-action: none;
+      outline: none;
+    }
+  
+  </style>
+
+<head>
+  <link data-trunk rel="rust" data-keep-debug="true" data-wasm-opt="z"/>
+  <meta charset="utf-8"/>
+  <title>SignalR client</title>
+</head>
+<body>
+  <div id="container">
+    <canvas id="canvas"></canvas>
+  </div>
+</body>
+</html>
