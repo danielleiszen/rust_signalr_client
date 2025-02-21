@@ -131,7 +131,7 @@ client.disconnect();
 
 ## Acknowledgements
 
-Special thanks to the ['maintainer of the signalrs package'](https://github.com/szarykott) for his invaluable inspiration and work in the first SignalR client. Their efforts have significantly contributed to the development of this package.
+Special thanks to the [`maintainer of the signalrs package`](https://github.com/szarykott) for his invaluable inspiration and work in the first SignalR client. Their efforts have significantly contributed to the development of this package.
 
 ## Contributing
 Contributions are welcome! Please fork the repository and submit pull requests along with an issue or some explanation. Ensure your code follows the existing style and includes tests for any new functionality. 
