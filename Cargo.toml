@@ -3,6 +3,14 @@ name = "signalr-client"
 version = "0.1.0"
 edition = "2021"
 authors = ["Daniel Leiszen <daniel.leiszen@gmail.com>"]
+description = "A Rust library for calling SignalR hubs from a Rust cross-platform application, supporting WASM and non WASM targets."
+license = "MIT"
+repository = "https://github.com/danielleiszen/rust_signalr_client"
+homepage = "https://github.com/danielleiszen/rust_signalr_client"
+documentation = "https://docs.rs/signalr-client"
+readme = "README.md"
+keywords = ["signalr", "rust", "websockets", "tokio", "wasm"]
+categories = ["network-programming", "web-programming", "asynchronous"]
 
 [lib]
 crate-type = ["cdylib", "rlib"]
