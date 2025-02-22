@@ -1,5 +1,10 @@
 # SignalR client for Rust 
 
+[![Current Crates.io Version](https://img.shields.io/crates/v/signalr_client
+)](https://crates.io/crates/signalr_client)
+[![Documentation](https://img.shields.io/badge/docs-latest-blue)](https://docs.rs/signalr-client/0.1.1/signalr_client/)
+![license](https://shields.io/badge/license-MIT%2FApache--2.0-blue)
+
 I made this client because I could not find a client that supported my requirements calling a complex backend written in SignalR. My biggest issue that I could not overcome was that the existing client I found did not support WASM. It is bound to tokio and I could not build it to wasm32 targets. This package was designed to overcome this limitation. It supports WebAssembly targets out of the box.
 
  Read more about SignalR in the [`offical documentation`](https://learn.microsoft.com/en-us/aspnet/core/signalr/introduction?view=aspnetcore-9.0).
