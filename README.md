@@ -19,9 +19,10 @@ signalr-client is a Rust library designed to provide a way to call SignalR hubs 
 ## Installation Instructions
 To use this package, add the following to your Cargo.toml:
 
+```
 [dependencies]
-signalr-client = "0.1.0"
-
+signalr-client = "0.1.1"
+```
 ## Usage Examples
 
 Here is a complex test scenario demonstrating how to use the signalr-client package:
