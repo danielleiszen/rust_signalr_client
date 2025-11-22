@@ -7,4 +7,4 @@ mod communication;
 
 pub use client::{InvocationContext, SignalRClient};
 pub use execution::{ArgumentConfiguration, CallbackHandler};
-pub use completer::{CompletedFuture, ManualFuture, ManualStream};
+pub use completer::{CompletedFuture, ManualFuture, ManualFutureCompleter, ManualStream, ManualStreamCompleter};
