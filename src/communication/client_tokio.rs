@@ -10,13 +10,17 @@ use tokio::{net::TcpStream, sync::Mutex, task::JoinHandle};
 use tokio_native_tls::native_tls::TlsConnector;
 use tokio_websockets::{ClientBuilder, MaybeTlsStream, Message, WebSocketStream};
 
+trait CommunicationDisconnectionHandler  {
+    fn on_connection_dropped(&self);
+}
+
 struct CommunicationConnection {
     _sink: SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
     _receiver: Option<JoinHandle<()>>,
 }
 
 impl CommunicationConnection {
-    fn start_receiving(&mut self, mut stream: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>, mut storage: impl Storage + Send + 'static) {
+    fn start_receiving(&mut self, mut stream: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>, mut storage: impl Storage + Send + 'static, disconnection_handler: impl CommunicationDisconnectionHandler + Send + 'static) {
         let handle = tokio::spawn(async move {
             while let Some(item) = stream.next().await {
                 if item.is_ok() {
@@ -35,6 +39,8 @@ impl CommunicationConnection {
                     }
                 }
             }
+
+            disconnection_handler.on_connection_dropped();
         });
 
         self._receiver = Some(handle);
@@ -65,15 +71,22 @@ impl Drop for CommunicationConnection {
     }
 }
 
+#[derive(Clone, Debug)]
+enum DisconnectionReason {
+    RemoteClosed,
+    LocalClosed,
+    NeverOpened,
+}
+
 enum ConnectionState {
-    NotConnected,
+    NotConnected(DisconnectionReason),
     Connected(Arc<Mutex<CommunicationConnection>>)
 }
 
 impl Clone for ConnectionState{
     fn clone(&self) -> Self {
         match self {
-            Self::NotConnected => Self::NotConnected,
+            Self::NotConnected(reason) => Self::NotConnected(reason.clone()),
             Self::Connected(arg0) => Self::Connected(arg0.clone()),
         }
     }
@@ -114,7 +127,7 @@ impl Communication for CommunicationClient {
     
     async fn send<T: serde::Serialize>(&mut self, data: T) -> Result<(), String> {
         match &self._state {
-            ConnectionState::NotConnected => Err(format!("Client is not connected, cannot send")),
+            ConnectionState::NotConnected(reason) => Err(format!("Client is not connected, cannot send: {:?}", reason)),
             ConnectionState::Connected(mutex) => {
                 let mut connection = mutex.lock().await;
 
@@ -124,26 +137,26 @@ impl Communication for CommunicationClient {
     }
 
     fn disconnect(&mut self) {
-        let mut drop = false;
+        let mut dropped = false;
 
         match &self._state {
-            ConnectionState::NotConnected => {
-                info!("The client is not connected, cannot disconnect");
+            ConnectionState::NotConnected(reason) => {
+                info!("The client is not connected: {:?}, cannot disconnect", reason);
             },
             ConnectionState::Connected(mutex) => {
                 let count = Arc::strong_count(mutex) - 1;
 
                 if count == 0 {
-                    info!("The underlying connection is going to be disposed.");
-                    drop = true;
+                    info!("The underlying connection is going to be disposed.");                 
+                    dropped = true;
                 } else {
                     info!("The underlying connection has {} more references, not disconnecting.", count);
                 }
             },
         }
 
-        if drop {
-            self._state = ConnectionState::NotConnected;
+        if dropped {
+            self._state = ConnectionState::NotConnected(DisconnectionReason::LocalClosed);
         }
     }    
 }
@@ -155,7 +168,7 @@ impl CommunicationClient {
 
         CommunicationClient {
             _endpoint: endpoint,           
-            _state: ConnectionState::NotConnected,
+            _state: ConnectionState::NotConnected(DisconnectionReason::NeverOpened),
             _actions: UpdatableActionStorage::new(),
         }
     }
@@ -178,7 +191,7 @@ impl CommunicationClient {
         match stream {
             Ok((ws, _)) => {
                 let (mut write, mut read) = ws.split();
-
+        
                 info!("Initiating handshake...");
                 let handshake = HandshakeRequest::new("json".to_string());
                 let message = MessageParser::to_json(&handshake).unwrap();
@@ -191,7 +204,7 @@ impl CommunicationClient {
                     };
             
                     if let Some(hand) = read.next().await {
-                        if hand.is_ok() {
+                        if hand.is_ok() {                            
                             connection.start_receiving(read, self._actions.clone());                
                             self._state = ConnectionState::Connected(Arc::new(Mutex::new(connection)));
         

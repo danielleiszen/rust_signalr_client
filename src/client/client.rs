@@ -9,6 +9,13 @@ use crate::execution::{ArgumentConfiguration, CallbackHandler, Storage, StorageU
 
 use super::{ConnectionConfiguration, InvocationContext};
 
+pub trait DisconnectionHandler {
+    fn on_disconnected(&self, reconnection: ReconnectionHandler);
+}
+
+pub struct ReconnectionHandler {
+}
+
 /// A client for connecting to and interacting with a SignalR hub.
 ///
 /// The `SignalRClient` can be used to invoke methods on the hub, send messages, and register callbacks.
@@ -123,6 +130,7 @@ use super::{ConnectionConfiguration, InvocationContext};
 pub struct SignalRClient {
     _actions: UpdatableActionStorage,
     _connection: CommunicationClient,
+    _disconnection_handler: Option<Box<dyn DisconnectionHandler + Send + Sync>>,
 }
 
 impl Drop for SignalRClient {
@@ -188,6 +196,8 @@ impl SignalRClient {
             (ops)(&mut config);
         }
 
+        let disconnection_handler = config.get_disconnection_handler();
+
         let result = HttpClient::negotiate(config).await;
 
         if result.is_ok() {
@@ -203,7 +213,8 @@ impl SignalRClient {
                 if storage.is_ok() {
                     let ret = SignalRClient {
                         _actions: storage.unwrap(),
-                        _connection: client
+                        _connection: client,
+                        _disconnection_handler: disconnection_handler,
                     };    
     
                     Ok(ret)    
@@ -528,6 +539,6 @@ impl SignalRClient {
 
 impl Clone for SignalRClient {
     fn clone(&self) -> Self {
-        Self { _actions: self._actions.clone(), _connection: self._connection.clone() }
+        Self { _actions: self._actions.clone(), _connection: self._connection.clone(), _disconnection_handler: None }
     }
 }
