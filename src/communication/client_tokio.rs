@@ -1,16 +1,16 @@
-use std::{str::FromStr, sync::Arc};
+use std::{str::FromStr, sync::{Arc, Weak}};
 
 use crate::{execution::{Storage, UpdatableActionStorage}, protocol::{messages::{MessageParser, RECORD_SEPARATOR}, negotiate::{HandshakeRequest, Ping}}};
 
-use super::Communication;
+use super::{Communication, reconnection::ReconnectionConfig};
 use futures::{stream::{SplitSink, SplitStream}, SinkExt, StreamExt};
 use http::Uri;
-use log::{error, info};
+use log::{error, info, warn};
 use tokio::{net::TcpStream, sync::Mutex, task::JoinHandle};
 use tokio_native_tls::native_tls::TlsConnector;
 use tokio_websockets::{ClientBuilder, MaybeTlsStream, Message, WebSocketStream};
 
-trait CommunicationDisconnectionHandler  {
+trait CommunicationDisconnectionHandler: Send {
     fn on_connection_dropped(&self);
 }
 
@@ -20,7 +20,7 @@ struct CommunicationConnection {
 }
 
 impl CommunicationConnection {
-    fn start_receiving(&mut self, mut stream: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>, mut storage: impl Storage + Send + 'static, disconnection_handler: impl CommunicationDisconnectionHandler + Send + 'static) {
+    fn start_receiving(&mut self, mut stream: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>, mut storage: impl Storage + Send + 'static, disconnection_handler: impl CommunicationDisconnectionHandler + 'static) {
         let handle = tokio::spawn(async move {
             while let Some(item) = stream.next().await {
                 if item.is_ok() {
@@ -76,6 +76,7 @@ enum DisconnectionReason {
     RemoteClosed,
     LocalClosed,
     NeverOpened,
+    Reconnecting,
 }
 
 enum ConnectionState {
@@ -94,8 +95,10 @@ impl Clone for ConnectionState{
 
 pub struct CommunicationClient {
     _endpoint: Uri,
-    _state : ConnectionState,
+    _state : Arc<Mutex<ConnectionState>>,
     _actions: UpdatableActionStorage,
+    _reconnection_config: ReconnectionConfig,
+    _disconnection_handler: Option<Arc<Box<dyn Fn() + Send + Sync>>>,
 }
 
 impl Clone for CommunicationClient {
@@ -104,6 +107,8 @@ impl Clone for CommunicationClient {
             _endpoint: self._endpoint.clone(), 
             _state: self._state.clone(),
             _actions: self._actions.clone(),
+            _reconnection_config: self._reconnection_config.clone(),
+            _disconnection_handler: self._disconnection_handler.clone(),
         }
     }
 }
@@ -126,7 +131,8 @@ impl Communication for CommunicationClient {
     }
     
     async fn send<T: serde::Serialize>(&mut self, data: T) -> Result<(), String> {
-        match &self._state {
+        let state = self._state.lock().await;
+        match &*state {
             ConnectionState::NotConnected(reason) => Err(format!("Client is not connected, cannot send: {:?}", reason)),
             ConnectionState::Connected(mutex) => {
                 let mut connection = mutex.lock().await;
@@ -137,27 +143,50 @@ impl Communication for CommunicationClient {
     }
 
     fn disconnect(&mut self) {
-        let mut dropped = false;
-
+        // We need to lock the state to disconnect
+        // But disconnect is not async in the trait?
+        // Wait, the trait definition in common.rs says: fn disconnect(&mut self);
+        // But we need to await the mutex.
+        // We can use blocking_lock if we are in a sync context, but we are likely in async.
+        // However, the trait is synchronous. This is a problem with the trait design if we use async mutex.
+        // But `CommunicationClient` in `client_tokio.rs` uses `tokio::sync::Mutex`.
+        // We can spawn a task to disconnect? Or use `try_lock`?
+        // The original code was:
+        /*
         match &self._state {
-            ConnectionState::NotConnected(reason) => {
-                info!("The client is not connected: {:?}, cannot disconnect", reason);
-            },
-            ConnectionState::Connected(mutex) => {
-                let count = Arc::strong_count(mutex) - 1;
-
-                if count == 0 {
-                    info!("The underlying connection is going to be disposed.");                 
-                    dropped = true;
-                } else {
-                    info!("The underlying connection has {} more references, not disconnecting.", count);
-                }
-            },
+            ConnectionState::Connected(mutex) => { ... }
         }
+        */
+        // It was accessing `self._state` directly which was NOT a mutex.
+        // Now `self._state` IS a mutex.
+        // If I can't change the trait, I have to deal with this.
+        // I can spawn a task to do the disconnection.
+        
+        let state = self._state.clone();
+        tokio::spawn(async move {
+            let mut guard = state.lock().await;
+            let mut dropped = false;
+            
+            match &*guard {
+                ConnectionState::NotConnected(reason) => {
+                    info!("The client is not connected: {:?}, cannot disconnect", reason);
+                },
+                ConnectionState::Connected(mutex) => {
+                    let count = Arc::strong_count(mutex) - 1;
 
-        if dropped {
-            self._state = ConnectionState::NotConnected(DisconnectionReason::LocalClosed);
-        }
+                    if count == 0 {
+                        info!("The underlying connection is going to be disposed.");                 
+                        dropped = true;
+                    } else {
+                        info!("The underlying connection has {} more references, not disconnecting.", count);
+                    }
+                },
+            }
+
+            if dropped {
+                *guard = ConnectionState::NotConnected(DisconnectionReason::LocalClosed);
+            }
+        });
     }    
 }
 
@@ -168,24 +197,34 @@ impl CommunicationClient {
 
         CommunicationClient {
             _endpoint: endpoint,           
-            _state: ConnectionState::NotConnected(DisconnectionReason::NeverOpened),
+            _state: Arc::new(Mutex::new(ConnectionState::NotConnected(DisconnectionReason::NeverOpened))),
             _actions: UpdatableActionStorage::new(),
+            _reconnection_config: ReconnectionConfig::default(),
+            _disconnection_handler: None,
         }
     }
 
-    async fn connect_internal(&mut self) -> Result<(), String> {
+    pub fn set_reconnection_config(&mut self, config: ReconnectionConfig) {
+        self._reconnection_config = config;
+    }
+
+    pub fn set_disconnection_handler(&mut self, handler: impl Fn() + Send + Sync + 'static) {
+        self._disconnection_handler = Some(Arc::new(Box::new(handler)));
+    }
+
+    async fn connect_to_server(endpoint: Uri) -> Result<(SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>, SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>), String> {
         let stream: Result<(WebSocketStream<MaybeTlsStream<TcpStream>>, http::Response<()>), tokio_websockets::Error>;
-        info!("Connecting to endpoint {}", self._endpoint);
+        info!("Connecting to endpoint {}", endpoint);
          
-        if Some("wss") == self._endpoint.scheme_str() {
+        if Some("wss") == endpoint.scheme_str() {
             info!("Connection to secure endpoint...");
             let Ok(connector) = TlsConnector::new() else { return Err("Cannot create default TLS connector".to_string()); };
         
             let connector = tokio_websockets::Connector::NativeTls(connector.into());
-            stream = ClientBuilder::from_uri(self._endpoint.clone()).connector(&connector).connect().await;             
+            stream = ClientBuilder::from_uri(endpoint.clone()).connector(&connector).connect().await;             
         } else {
             info!("Connection to plain endpoint...");
-            stream = ClientBuilder::from_uri(self._endpoint.clone()).connect().await;
+            stream = ClientBuilder::from_uri(endpoint.clone()).connect().await;
         }        
 
         match stream {
@@ -198,30 +237,51 @@ impl CommunicationClient {
                 let hsres = write.send(Message::text(message)).await;
         
                 if hsres.is_ok() {            
-                    let mut connection = CommunicationConnection {
-                        _receiver: None,
-                        _sink: write,
-                    };
-            
                     if let Some(hand) = read.next().await {
                         if hand.is_ok() {                            
-                            connection.start_receiving(read, self._actions.clone());                
-                            self._state = ConnectionState::Connected(Arc::new(Mutex::new(connection)));
-        
-                            Ok(())
+                            Ok((write, read))
                         } else {
-                            return Err(hand.err().unwrap().to_string());
+                            Err(hand.err().unwrap().to_string())
                         }
                     } else {
-                        return Err("Handshake error".to_string());
+                        Err("Handshake error".to_string())
                     }
                 } else {
-                    return Err(hsres.err().unwrap().to_string());
+                    Err(hsres.err().unwrap().to_string())
                 }    
             },
             Err(error) => {
-                return Err(error.to_string());
+                Err(error.to_string())
             },
+        }
+    }
+
+    async fn connect_internal(&mut self) -> Result<(), String> {
+        let res = CommunicationClient::connect_to_server(self._endpoint.clone()).await;
+
+        match res {
+            Ok((write, read)) => {
+                let mut connection = CommunicationConnection {
+                    _receiver: None,
+                    _sink: write,
+                };
+
+                let handler = ClientDisconnectionHandler {
+                    state: Arc::downgrade(&self._state),
+                    endpoint: self._endpoint.clone(),
+                    actions: self._actions.clone(),
+                    reconnection_config: self._reconnection_config.clone(),
+                    user_handler: self._disconnection_handler.clone(),
+                };
+        
+                connection.start_receiving(read, self._actions.clone(), handler);                
+                
+                let mut state = self._state.lock().await;
+                *state = ConnectionState::Connected(Arc::new(Mutex::new(connection)));
+
+                Ok(())
+            },
+            Err(e) => Err(e),
         }
     }
     
@@ -236,5 +296,91 @@ impl CommunicationClient {
         }
 
         Vec::new()
+    }
+}
+
+struct ClientDisconnectionHandler {
+    state: Weak<Mutex<ConnectionState>>,
+    endpoint: Uri,
+    actions: UpdatableActionStorage,
+    reconnection_config: ReconnectionConfig,
+    user_handler: Option<Arc<Box<dyn Fn() + Send + Sync>>>,
+}
+
+impl CommunicationDisconnectionHandler for ClientDisconnectionHandler {
+    fn on_connection_dropped(&self) {
+        let state = self.state.clone();
+        let endpoint = self.endpoint.clone();
+        let actions = self.actions.clone();
+        let config = self.reconnection_config.clone();
+        let user_handler = self.user_handler.clone();
+
+        tokio::spawn(async move {
+            if let Some(s) = state.upgrade() {
+                let mut guard = s.lock().await;
+                if let ConnectionState::NotConnected(DisconnectionReason::LocalClosed) = *guard {
+                    return;
+                }
+                *guard = ConnectionState::NotConnected(DisconnectionReason::Reconnecting);
+            } else {
+                return;
+            }
+
+            let mut retry_count = 0;
+            let start_time = std::time::Instant::now();
+
+            loop {
+                let delay = config.policy.next_retry_delay(retry_count, start_time.elapsed().as_millis() as u64);
+                
+                if let Some(d) = delay {
+                    tokio::time::sleep(d).await;
+                    info!("Reconnecting to {} (attempt {})...", endpoint, retry_count + 1);
+                    
+                    match CommunicationClient::connect_to_server(endpoint.clone()).await {
+                        Ok((write, read)) => {
+                             if let Some(s) = state.upgrade() {
+                                let mut guard = s.lock().await;
+                                if let ConnectionState::NotConnected(DisconnectionReason::LocalClosed) = *guard {
+                                    return;
+                                }
+                                
+                                let new_handler = ClientDisconnectionHandler {
+                                    state: state.clone(),
+                                    endpoint: endpoint.clone(),
+                                    actions: actions.clone(),
+                                    reconnection_config: config.clone(),
+                                    user_handler: user_handler.clone(),
+                                };
+                                
+                                let mut conn_struct = CommunicationConnection {
+                                    _receiver: None,
+                                    _sink: write,
+                                };
+                                conn_struct.start_receiving(read, actions.clone(), new_handler);
+                                *guard = ConnectionState::Connected(Arc::new(Mutex::new(conn_struct)));
+                                info!("Reconnected successfully");
+                                return;
+                             } else {
+                                 return;
+                             }
+                        },
+                        Err(e) => {
+                            error!("Reconnection failed: {}", e);
+                            retry_count += 1;
+                        }
+                    }
+                } else {
+                    info!("Reconnection attempts exhausted.");
+                    if let Some(s) = state.upgrade() {
+                        let mut guard = s.lock().await;
+                        *guard = ConnectionState::NotConnected(DisconnectionReason::RemoteClosed);
+                    }
+                    if let Some(handler) = user_handler {
+                        handler();
+                    }
+                    return;
+                }
+            }
+        });
     }
 }

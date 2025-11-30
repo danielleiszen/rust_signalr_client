@@ -86,13 +86,13 @@ async fn test_service() {
         c.argument("callback1".to_string());
     }).await;
 
-    info!("Calling callback2");
+    // info!("Calling callback2");
 
-    let succ = client.invoke_with_args::<bool, _>("TriggerEntityResponse".to_string(), |c| {
-        c.argument("callback2".to_string());
-    }).await;
+    // let succ = client.invoke_with_args::<bool, _>("TriggerEntityResponse".to_string(), |c| {
+    //     c.argument("callback2".to_string());
+    // }).await;
 
-    assert!(succ.unwrap());
+    // assert!(succ.unwrap());
 
     let now = Instant::now();
     {

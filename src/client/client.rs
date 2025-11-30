@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use futures::Stream;
 use log::info;
 use serde::de::DeserializeOwned;
@@ -8,6 +9,8 @@ use crate::protocol::invoke::Invocation;
 use crate::execution::{ArgumentConfiguration, CallbackHandler, Storage, StorageUnregistrationHandler, UpdatableActionStorage};
 
 use super::{ConnectionConfiguration, InvocationContext};
+use crate::communication::reconnection::{ReconnectionConfig, ConstantDelayPolicy};
+use std::time::Duration;
 
 pub trait DisconnectionHandler {
     fn on_disconnected(&self, reconnection: ReconnectionHandler);
@@ -20,19 +23,6 @@ pub struct ReconnectionHandler {
 ///
 /// The `SignalRClient` can be used to invoke methods on the hub, send messages, and register callbacks.
 /// The client can be cloned and used freely across different parts of your application.
-///
-/// # Examples
-///
-/// ```
-/// // Connect to the SignalR server with custom configuration
-/// let mut client = SignalRClient::connect_with("localhost", "test", |c| {
-///     c.with_port(5220); // Set the port to 5220
-///     c.unsecure(); // Use an unsecure (HTTP) connection
-/// }).await.unwrap();
-///
-/// // Invoke the "SingleEntity" method and assert the result
-/// let re = client.invoke::<TestEntity>("SingleEntity".to_string()).await;
-/// assert!(re.is_ok());
 ///
 /// // Unwrap the result and assert the entity's text
 /// let entity = re.unwrap();
@@ -130,7 +120,6 @@ pub struct ReconnectionHandler {
 pub struct SignalRClient {
     _actions: UpdatableActionStorage,
     _connection: CommunicationClient,
-    _disconnection_handler: Option<Box<dyn DisconnectionHandler + Send + Sync>>,
 }
 
 impl Drop for SignalRClient {
@@ -170,16 +159,6 @@ impl SignalRClient {
     ///
     /// # Returns
     ///
-    /// * `Result<Self, String>` - On success, returns an instance of `Self`. On failure, returns an error message as a `String`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// let client = SignalRClient::connect_with("localhost", "test", |c| {
-    ///     c.with_port(5220);
-    ///     c.unsecure();
-    /// }).await.unwrap();
-    /// ```
     pub async fn connect_with<F>(domain: &str, hub: &str, options: F) -> Result<Self, String>
         where F: FnMut(&mut ConnectionConfiguration) 
     {
@@ -197,6 +176,7 @@ impl SignalRClient {
         }
 
         let disconnection_handler = config.get_disconnection_handler();
+        let reconnection_config = config.get_reconnection_config();
 
         let result = HttpClient::negotiate(config).await;
 
@@ -207,14 +187,25 @@ impl SignalRClient {
             let res = CommunicationClient::connect(&configuration).await;
 
             if res.is_ok() {
-                let client  = res.unwrap();
+                let mut client  = res.unwrap();
                 let storage = client.get_storage();
 
                 if storage.is_ok() {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        client.set_reconnection_config(reconnection_config);
+                        if let Some(handler) = disconnection_handler {
+                            let handler = Arc::new(handler);
+                            let h_clone = handler.clone();
+                            client.set_disconnection_handler(move || {
+                                h_clone.on_disconnected(ReconnectionHandler {});
+                            });
+                        }
+                    }
+
                     let ret = SignalRClient {
                         _actions: storage.unwrap(),
                         _connection: client,
-                        _disconnection_handler: disconnection_handler,
                     };    
     
                     Ok(ret)    
@@ -539,6 +530,6 @@ impl SignalRClient {
 
 impl Clone for SignalRClient {
     fn clone(&self) -> Self {
-        Self { _actions: self._actions.clone(), _connection: self._connection.clone(), _disconnection_handler: None }
+        Self { _actions: self._actions.clone(), _connection: self._connection.clone() }
     }
 }

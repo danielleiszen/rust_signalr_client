@@ -1,4 +1,5 @@
 mod common;
+pub mod reconnection;
 
 #[cfg(target_arch = "wasm32")]
 mod client_wasm;
