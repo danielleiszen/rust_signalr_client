@@ -36,6 +36,11 @@ namespace SignalRTestService
             {
                 await Task.CompletedTask;
 
+                if (Context.ConnectionAborted.IsCancellationRequested)
+                {
+                    yield break;
+                }
+
                 yield return new TestEntity
                 {
                     Number = i + 1,

@@ -28,7 +28,7 @@ pub trait Communication : Clone {
     async fn connect(configuration: &ConnectionData) -> Result<Self, String>;
     async fn send<T: Serialize>(&mut self, data: T) -> Result<(), String>;
     fn get_storage(&self) -> Result<UpdatableActionStorage, String>;
-    fn disconnect(&mut self);
+    async fn disconnect(&mut self);
 }
 
 pub struct HttpClient {

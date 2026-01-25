@@ -5,13 +5,130 @@ use crate::{execution::{Storage, UpdatableActionStorage}, protocol::{messages::{
 use super::{Communication, reconnection::ReconnectionConfig};
 use futures::{stream::{SplitSink, SplitStream}, SinkExt, StreamExt};
 use http::Uri;
-use log::{error, info, warn};
+use log::{error, info};
 use tokio::{net::TcpStream, sync::Mutex, task::JoinHandle};
 use tokio_native_tls::native_tls::TlsConnector;
 use tokio_websockets::{ClientBuilder, MaybeTlsStream, Message, WebSocketStream};
 
 trait CommunicationDisconnectionHandler: Send {
     fn on_connection_dropped(&self);
+}
+
+/// Context for manual reconnection, passed to user's disconnection handler.
+/// Allows the user to manually trigger reconnection attempts.
+#[derive(Clone)]
+pub struct ReconnectionContext {
+    state: Weak<Mutex<ConnectionState>>,
+    endpoint: Uri,
+    actions: UpdatableActionStorage,
+    reconnection_config: ReconnectionConfig,
+}
+
+impl ReconnectionContext {
+    /// Attempt to reconnect once. Returns Ok(()) on success.
+    pub async fn reconnect(&self) -> Result<(), String> {
+        let state = self.state.upgrade().ok_or("Client has been dropped")?;
+
+        // Check if already connected
+        {
+            let guard = state.lock().await;
+            if let ConnectionState::Connected(_) = &*guard {
+                return Ok(());
+            }
+        }
+
+        // Set state to reconnecting
+        {
+            let mut guard = state.lock().await;
+            if let ConnectionState::NotConnected(DisconnectionReason::LocalClosed) = *guard {
+                return Err("Client was locally disconnected".to_string());
+            }
+            *guard = ConnectionState::NotConnected(DisconnectionReason::Reconnecting);
+        }
+
+        info!("Manual reconnection attempt to {}...", self.endpoint);
+
+        match CommunicationClient::connect_to_server(self.endpoint.clone()).await {
+            Ok((write, read)) => {
+                let mut guard = state.lock().await;
+
+                // Check again if locally closed during reconnection
+                if let ConnectionState::NotConnected(DisconnectionReason::LocalClosed) = *guard {
+                    return Err("Client was locally disconnected".to_string());
+                }
+
+                let new_handler = ClientDisconnectionHandler {
+                    state: self.state.clone(),
+                    endpoint: self.endpoint.clone(),
+                    actions: self.actions.clone(),
+                    reconnection_config: self.reconnection_config.clone(),
+                    user_handler: None, // Manual mode doesn't re-trigger automatic reconnection
+                };
+
+                let mut conn_struct = CommunicationConnection {
+                    _receiver: None,
+                    _sink: write,
+                };
+                conn_struct.start_receiving(read, self.actions.clone(), new_handler);
+                *guard = ConnectionState::Connected(Arc::new(Mutex::new(conn_struct)));
+                info!("Manual reconnection successful");
+                Ok(())
+            },
+            Err(e) => {
+                error!("Manual reconnection failed: {}", e);
+                let mut guard = state.lock().await;
+                *guard = ConnectionState::NotConnected(DisconnectionReason::RemoteClosed);
+                Err(e)
+            }
+        }
+    }
+
+    /// Attempt reconnection with automatic retries using the configured policy.
+    /// Returns Ok(()) on success, Err if all attempts are exhausted.
+    pub async fn reconnect_with_policy(&self) -> Result<(), String> {
+        let mut retry_count = 0u32;
+        let start_time = std::time::Instant::now();
+
+        loop {
+            let delay = self.reconnection_config.policy.next_retry_delay(
+                retry_count,
+                start_time.elapsed().as_millis() as u64
+            );
+
+            if let Some(d) = delay {
+                if retry_count > 0 {
+                    tokio::time::sleep(d).await;
+                }
+
+                match self.reconnect().await {
+                    Ok(()) => return Ok(()),
+                    Err(e) => {
+                        if e.contains("locally disconnected") {
+                            return Err(e);
+                        }
+                        retry_count += 1;
+                    }
+                }
+            } else {
+                return Err("Reconnection attempts exhausted".to_string());
+            }
+        }
+    }
+
+    /// Check if currently connected
+    pub async fn is_connected(&self) -> bool {
+        if let Some(state) = self.state.upgrade() {
+            let guard = state.lock().await;
+            matches!(&*guard, ConnectionState::Connected(_))
+        } else {
+            false
+        }
+    }
+
+    /// Get the endpoint URI
+    pub fn endpoint(&self) -> &Uri {
+        &self.endpoint
+    }
 }
 
 struct CommunicationConnection {
@@ -98,7 +215,7 @@ pub struct CommunicationClient {
     _state : Arc<Mutex<ConnectionState>>,
     _actions: UpdatableActionStorage,
     _reconnection_config: ReconnectionConfig,
-    _disconnection_handler: Option<Arc<Box<dyn Fn() + Send + Sync>>>,
+    _disconnection_handler: Option<Arc<Box<dyn Fn(ReconnectionContext) + Send + Sync>>>,
 }
 
 impl Clone for CommunicationClient {
@@ -142,51 +259,29 @@ impl Communication for CommunicationClient {
         }
     }
 
-    fn disconnect(&mut self) {
-        // We need to lock the state to disconnect
-        // But disconnect is not async in the trait?
-        // Wait, the trait definition in common.rs says: fn disconnect(&mut self);
-        // But we need to await the mutex.
-        // We can use blocking_lock if we are in a sync context, but we are likely in async.
-        // However, the trait is synchronous. This is a problem with the trait design if we use async mutex.
-        // But `CommunicationClient` in `client_tokio.rs` uses `tokio::sync::Mutex`.
-        // We can spawn a task to disconnect? Or use `try_lock`?
-        // The original code was:
-        /*
-        match &self._state {
-            ConnectionState::Connected(mutex) => { ... }
-        }
-        */
-        // It was accessing `self._state` directly which was NOT a mutex.
-        // Now `self._state` IS a mutex.
-        // If I can't change the trait, I have to deal with this.
-        // I can spawn a task to do the disconnection.
+    async fn disconnect(&mut self) {        
+        let mut state = self._state.lock().await;
+        let mut dropped = false;
         
-        let state = self._state.clone();
-        tokio::spawn(async move {
-            let mut guard = state.lock().await;
-            let mut dropped = false;
-            
-            match &*guard {
-                ConnectionState::NotConnected(reason) => {
-                    info!("The client is not connected: {:?}, cannot disconnect", reason);
-                },
-                ConnectionState::Connected(mutex) => {
-                    let count = Arc::strong_count(mutex) - 1;
+        match &*state {
+            ConnectionState::NotConnected(reason) => {
+                info!("The client is not connected: {:?}, cannot disconnect", reason);
+            },
+            ConnectionState::Connected(mutex) => {
+                let count = Arc::strong_count(mutex) - 1;
 
-                    if count == 0 {
-                        info!("The underlying connection is going to be disposed.");                 
-                        dropped = true;
-                    } else {
-                        info!("The underlying connection has {} more references, not disconnecting.", count);
-                    }
-                },
-            }
+                if count == 0 {
+                    info!("The underlying connection is going to be disposed.");                 
+                    dropped = true;
+                } else {
+                    info!("The underlying connection has {} more references, not disconnecting.", count);
+                }
+            },
+        }
 
-            if dropped {
-                *guard = ConnectionState::NotConnected(DisconnectionReason::LocalClosed);
-            }
-        });
+        if dropped {
+            *state = ConnectionState::NotConnected(DisconnectionReason::LocalClosed);
+        }
     }    
 }
 
@@ -208,7 +303,7 @@ impl CommunicationClient {
         self._reconnection_config = config;
     }
 
-    pub fn set_disconnection_handler(&mut self, handler: impl Fn() + Send + Sync + 'static) {
+    pub fn set_disconnection_handler(&mut self, handler: impl Fn(ReconnectionContext) + Send + Sync + 'static) {
         self._disconnection_handler = Some(Arc::new(Box::new(handler)));
     }
 
@@ -304,7 +399,9 @@ struct ClientDisconnectionHandler {
     endpoint: Uri,
     actions: UpdatableActionStorage,
     reconnection_config: ReconnectionConfig,
-    user_handler: Option<Arc<Box<dyn Fn() + Send + Sync>>>,
+    /// If set, user has full control over reconnection (manual mode).
+    /// If None, automatic reconnection is used.
+    user_handler: Option<Arc<Box<dyn Fn(ReconnectionContext) + Send + Sync>>>,
 }
 
 impl CommunicationDisconnectionHandler for ClientDisconnectionHandler {
@@ -316,14 +413,41 @@ impl CommunicationDisconnectionHandler for ClientDisconnectionHandler {
         let user_handler = self.user_handler.clone();
 
         tokio::spawn(async move {
+            // Check if locally closed - if so, don't do anything
             if let Some(s) = state.upgrade() {
-                let mut guard = s.lock().await;
+                let guard = s.lock().await;
                 if let ConnectionState::NotConnected(DisconnectionReason::LocalClosed) = *guard {
                     return;
                 }
-                *guard = ConnectionState::NotConnected(DisconnectionReason::Reconnecting);
             } else {
                 return;
+            }
+
+            // If user has a handler, give them full control (manual mode)
+            if let Some(handler) = user_handler {
+                // Set state to RemoteClosed (user will change it if they reconnect)
+                if let Some(s) = state.upgrade() {
+                    let mut guard = s.lock().await;
+                    *guard = ConnectionState::NotConnected(DisconnectionReason::RemoteClosed);
+                }
+
+                // Create context for manual reconnection
+                let context = ReconnectionContext {
+                    state: state.clone(),
+                    endpoint: endpoint.clone(),
+                    actions: actions.clone(),
+                    reconnection_config: config.clone(),
+                };
+
+                info!("Connection dropped. Calling user's disconnection handler (manual mode).");
+                handler(context);
+                return;
+            }
+
+            // No user handler - use automatic reconnection
+            if let Some(s) = state.upgrade() {
+                let mut guard = s.lock().await;
+                *guard = ConnectionState::NotConnected(DisconnectionReason::Reconnecting);
             }
 
             let mut retry_count = 0;
@@ -331,11 +455,11 @@ impl CommunicationDisconnectionHandler for ClientDisconnectionHandler {
 
             loop {
                 let delay = config.policy.next_retry_delay(retry_count, start_time.elapsed().as_millis() as u64);
-                
+
                 if let Some(d) = delay {
                     tokio::time::sleep(d).await;
                     info!("Reconnecting to {} (attempt {})...", endpoint, retry_count + 1);
-                    
+
                     match CommunicationClient::connect_to_server(endpoint.clone()).await {
                         Ok((write, read)) => {
                              if let Some(s) = state.upgrade() {
@@ -343,22 +467,22 @@ impl CommunicationDisconnectionHandler for ClientDisconnectionHandler {
                                 if let ConnectionState::NotConnected(DisconnectionReason::LocalClosed) = *guard {
                                     return;
                                 }
-                                
+
                                 let new_handler = ClientDisconnectionHandler {
                                     state: state.clone(),
                                     endpoint: endpoint.clone(),
                                     actions: actions.clone(),
                                     reconnection_config: config.clone(),
-                                    user_handler: user_handler.clone(),
+                                    user_handler: None, // Automatic mode continues without user handler
                                 };
-                                
+
                                 let mut conn_struct = CommunicationConnection {
                                     _receiver: None,
                                     _sink: write,
                                 };
                                 conn_struct.start_receiving(read, actions.clone(), new_handler);
                                 *guard = ConnectionState::Connected(Arc::new(Mutex::new(conn_struct)));
-                                info!("Reconnected successfully");
+                                info!("Reconnected successfully (automatic mode)");
                                 return;
                              } else {
                                  return;
@@ -370,13 +494,10 @@ impl CommunicationDisconnectionHandler for ClientDisconnectionHandler {
                         }
                     }
                 } else {
-                    info!("Reconnection attempts exhausted.");
+                    info!("Automatic reconnection attempts exhausted.");
                     if let Some(s) = state.upgrade() {
                         let mut guard = s.lock().await;
                         *guard = ConnectionState::NotConnected(DisconnectionReason::RemoteClosed);
-                    }
-                    if let Some(handler) = user_handler {
-                        handler();
                     }
                     return;
                 }

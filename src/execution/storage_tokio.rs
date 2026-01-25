@@ -24,8 +24,6 @@ impl Drop for UpdatableActionStorage {
     }
 }
 
-unsafe impl Send for UpdatableActionStorage {}
-
 impl Storage for UpdatableActionStorage {
     fn insert(&mut self, key: String, action: impl UpdatableAction + 'static) {
         if let Ok(mut data) = self._data.lock() {
