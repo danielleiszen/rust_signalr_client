@@ -1,4 +1,4 @@
-use crate::{completer::{ManualFuture, ManualFutureCompleter}, protocol::{invoke::Completion, negotiate::MessageType}};
+use crate::{completer::{ManualFuture, ManualFutureCompleter}, protocol::{hub_protocol::MessagePayload, invoke::Completion, negotiate::MessageType}};
 use log::{error, info};
 use serde::de::DeserializeOwned;
 
@@ -51,31 +51,64 @@ impl<R: DeserializeOwned + Unpin> Drop for InvocationAction<R> {
 }
 
 impl<R: DeserializeOwned + Unpin + Send> UpdatableAction for InvocationAction<R> {
-    fn update_with(&mut self, message: &str, message_type: MessageType) {
-        // debug!("Updating invocation {}", self.invocation_id);
-
+    fn update_with(&mut self, message: &MessagePayload, message_type: MessageType) {
         match message_type {
-            MessageType::Invocation => panic!("Cannot complete invocation {}, with message {:?}", self.invocation_id, message),
-            MessageType::StreamItem => panic!("Cannot complete invocation {}, with message {:?}", self.invocation_id, message),
             MessageType::Completion => {
-                if let Ok(completition) = MessageParser::parse_message::<Completion<R>>(message) {
-                    if completition.is_result() {
-                        info!("Completition is parsed");
-                        self.complete(completition.unwrap_result());
-                    } else {
-                        error!("Cannot complete invocation {}, error: {}", self.invocation_id, completition.unwrap_error());
-                    }
-                } else {
-                    error!("Cannot parse completition: {}", message);
+                match message {
+                    MessagePayload::Text(s) => {
+                        if let Ok(completition) = MessageParser::parse_message::<Completion<R>>(s) {
+                            if completition.is_result() {
+                                info!("Completition is parsed");
+                                self.complete(completition.unwrap_result());
+                            } else {
+                                error!("Cannot complete invocation {}, error: {}", self.invocation_id, completition.unwrap_error());
+                            }
+                        } else {
+                            error!("Cannot parse completition: {}", s);
+                        }
+                    },
+                    #[cfg(feature = "messagepack")]
+                    MessagePayload::Binary(data) => {
+                        match crate::protocol::msgpack::parse_msgpack_message(data) {
+                            Ok(items) => {
+                                log::debug!("MsgPack completion for {}: raw items={:?}", self.invocation_id, items);
+                                match crate::protocol::msgpack::parse_completion(&items) {
+                                    Ok(comp) => {
+                                        log::debug!("MsgPack completion result_kind={}, payload={:?}", comp.result_kind, comp.payload);
+                                        match comp.result_kind {
+                                            1 => {
+                                                let err = comp.payload
+                                                    .and_then(|v| v.as_str().map(|s| s.to_string()))
+                                                    .unwrap_or_else(|| "Unknown error".to_string());
+                                                error!("Cannot complete invocation {}, error: {}", self.invocation_id, err);
+                                            },
+                                            2 => {
+                                                // Void completion - no result to deliver
+                                            },
+                                            3 => {
+                                                if let Some(val) = comp.payload {
+                                                    match crate::protocol::msgpack::value_to_type::<R>(&val) {
+                                                        Ok(result) => {
+                                                            info!("Completition is parsed");
+                                                            self.complete(result);
+                                                        },
+                                                        Err(e) => error!("Cannot deserialize completion result: {}", e),
+                                                    }
+                                                }
+                                            },
+                                            _ => error!("Unknown ResultKind: {}", comp.result_kind),
+                                        }
+                                    },
+                                    Err(e) => error!("Cannot parse msgpack completion: {}", e),
+                                }
+                            },
+                            Err(e) => error!("Cannot parse msgpack message: {}", e),
+                        }
+                    },
                 }
             },
-            MessageType::StreamInvocation => panic!("Cannot complete invocation {}, with message {:?}", self.invocation_id, message),
-            MessageType::CancelInvocation => panic!("Cannot complete invocation {}, with message {:?}", self.invocation_id, message),
-            MessageType::Ping => panic!("Cannot complete invocation {}, with message {:?}", self.invocation_id, message),
-            MessageType::Close => panic!("Cannot complete invocation {}, with message {:?}", self.invocation_id, message),
-            MessageType::Other => panic!("Cannot complete invocation {}, with message {:?}", self.invocation_id, message),
+            _ => error!("Cannot complete invocation {} with message type {:?}", self.invocation_id, message_type),
         }
-        
     }
     
     fn is_completed(&self) -> bool {

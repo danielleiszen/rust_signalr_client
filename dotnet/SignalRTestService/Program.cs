@@ -4,7 +4,7 @@ using SignalRTestService;
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddControllersWithViews();
-builder.Services.AddSignalR();
+builder.Services.AddSignalR().AddMessagePackProtocol();
 
 builder.Services.AddCors(a =>
 { 

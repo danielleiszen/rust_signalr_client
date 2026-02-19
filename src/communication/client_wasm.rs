@@ -4,9 +4,9 @@ use log::{error, info, warn};
 use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_sockets::{ConnectionStatus, PollingClient};
 
-use crate::{completer::CompletedFuture, 
+use crate::{completer::CompletedFuture,
     execution::
-        {ManualFutureState, Storage, UpdatableActionStorage}, protocol::{messages::{MessageParser, RECORD_SEPARATOR}, negotiate::{HandshakeRequest, HandshakeResponse, Ping}}};
+        {ManualFutureState, Storage, UpdatableActionStorage}, protocol::{hub_protocol::{HubProtocolKind, MessagePayload}, messages::{MessageParser, RECORD_SEPARATOR}, negotiate::{HandshakeRequest, HandshakeResponse, Ping}}};
 
 use super::common::Communication;
 
@@ -27,6 +27,7 @@ pub struct CommunicationClient {
     _client: Option<Rc<RefCell<PollingClient>>>,
     _state: Rc<RefCell<ConnectionState>>,
     _token: Option<f64>,
+    _protocol_kind: HubProtocolKind,
 }
 
 impl Clone for CommunicationClient {
@@ -38,7 +39,7 @@ impl Clone for CommunicationClient {
         } else {
             info!("Cloning empty communication client");
         }
-        Self { _client: self._client.clone(), _state: self._state.clone(), _token: self._token.clone() }
+        Self { _client: self._client.clone(), _state: self._state.clone(), _token: self._token.clone(), _protocol_kind: self._protocol_kind }
     }
 }
 
@@ -65,6 +66,16 @@ impl Communication for CommunicationClient {
         let res = self.send_internal(data);
 
         CompletedFuture::new(res).await
+    }
+
+    async fn send_binary(&mut self, data: Vec<u8>) -> Result<(), String> {
+        let res = self.send_binary_internal(data);
+
+        CompletedFuture::new(res).await
+    }
+
+    fn get_protocol_kind(&self) -> HubProtocolKind {
+        self._protocol_kind
     }
 
     fn get_storage(&self) -> Result<UpdatableActionStorage, String> {
@@ -95,20 +106,23 @@ impl CommunicationClient {
     fn create(configuration: &super::ConnectionData) -> Self {
         info!("Creating communication client to {}", &configuration.get_endpoint());
         let res = PollingClient::new(&configuration.get_endpoint());
+        let protocol_kind = configuration.get_protocol_kind();
 
         if res.is_ok() {
             CommunicationClient {
                 _state: Rc::new(RefCell::new(ConnectionState::Connect(ManualFutureState::new()))),
                 _client: Some(Rc::new(RefCell::new(res.unwrap()))),
                 _token: None,
-            }    
+                _protocol_kind: protocol_kind,
+            }
         } else {
             CommunicationClient {
                 _state: Rc::new(RefCell::new(ConnectionState::Connect(ManualFutureState::new()))),
                 _client: None,
                 _token: None,
-            }    
-        }        
+                _protocol_kind: protocol_kind,
+            }
+        }
     }
 
     async fn connect_internal(&mut self) -> Result<(), String> {
@@ -123,9 +137,10 @@ impl CommunicationClient {
             if self._client.is_some() {
                 let refclient = self._client.as_ref().unwrap().clone();
                 let refstate = self._state.clone();
-        
+                let protocol_kind = self._protocol_kind;
+
                 let closure = wasm_bindgen::prelude::Closure::wrap(Box::new(move || {
-                    CommunicationClient::polling_loop(&refclient, &refstate);
+                    CommunicationClient::polling_loop(&refclient, &refstate, protocol_kind);
                 }) as Box<dyn Fn()>);
         
                 info!("Starting poll loop");
@@ -137,7 +152,7 @@ impl CommunicationClient {
                 self._token = Some(token);
     
                 info!("Initiating handshake...");
-                let r = self.send(HandshakeRequest::new("json".to_string())).await;
+                let r = self.send(HandshakeRequest::new(self._protocol_kind.protocol_name().to_string())).await;
     
                 if r.is_err() {
                     return Err(format!("Handshake cannot be sent. {}", r.unwrap_err()));
@@ -172,34 +187,60 @@ impl CommunicationClient {
         Ok(())
     }
 
-    fn get_messages(message: wasm_sockets::Message) -> Vec<String> {
+    fn get_text_messages(message: wasm_sockets::Message) -> Vec<String> {
         match message {
             wasm_sockets::Message::Text(txt) => {
                 txt.split(RECORD_SEPARATOR).map(|s| MessageParser::strip_record_separator(s).to_string()).collect()
             },
             wasm_sockets::Message::Binary(_) => {
-                panic!("Binary message is not supported");
+                warn!("Received binary message in text mode, ignoring");
+                Vec::new()
+            },
+        }
+    }
+
+    #[cfg(feature = "messagepack")]
+    fn get_binary_messages(message: wasm_sockets::Message) -> Vec<Vec<u8>> {
+        match message {
+            wasm_sockets::Message::Binary(data) => {
+                match crate::protocol::msgpack::split_framed_messages(&data) {
+                    Ok(frames) => frames,
+                    Err(e) => {
+                        error!("Failed to split binary frames: {}", e);
+                        Vec::new()
+                    }
+                }
+            },
+            wasm_sockets::Message::Text(_) => {
+                warn!("Received text message in binary mode, ignoring");
+                Vec::new()
             },
         }
     }
 
     fn send_internal<T: serde::Serialize>(&self, data: T) -> Result<(), String> {
         let json = MessageParser::to_json(&data).unwrap();
-        // debug!("CLIENT invocation json: {}", json);
-
-        // debug!("CLIENT is borrowing polling wasm client");
 
         if self._client.is_some() {
             let bclient = self._client.as_ref().unwrap().borrow();
-            return bclient.send_string(&json).map_err(|e| e.as_string().unwrap());    
+            return bclient.send_string(&json).map_err(|e| e.as_string().unwrap());
         } else {
             return Err(format!("The client is not connected. Cannot send data"));
         }
     }
 
-    fn polling_loop(client: &Rc<RefCell<wasm_sockets::PollingClient>>, state: &Rc<RefCell<ConnectionState>>) {
+    fn send_binary_internal(&self, data: Vec<u8>) -> Result<(), String> {
+        if self._client.is_some() {
+            let bclient = self._client.as_ref().unwrap().borrow();
+            return bclient.send_binary(&data).map_err(|e| e.as_string().unwrap());
+        } else {
+            return Err(format!("The client is not connected. Cannot send data"));
+        }
+    }
+
+    fn polling_loop(client: &Rc<RefCell<wasm_sockets::PollingClient>>, state: &Rc<RefCell<ConnectionState>>, protocol_kind: HubProtocolKind) {
         let status = client.borrow().status();
-        
+
         if status == ConnectionStatus::Connected {
             let mstate = &mut *state.borrow_mut();
 
@@ -208,7 +249,8 @@ impl CommunicationClient {
                     connected.complete(true);
                 },
                 ConnectionState::Handshake(handshake) => {
-                    let messages = CommunicationClient::receive_messages(client);
+                    // Handshake is always JSON text, even for MessagePack
+                    let messages = CommunicationClient::receive_text_messages(client);
 
                     if messages.len() == 1 {
                         let hs = MessageParser::parse_message::<HandshakeResponse>(messages.first().unwrap());
@@ -221,20 +263,40 @@ impl CommunicationClient {
                     }
                 },
                 ConnectionState::Process(storage) => {
-                    let messages = CommunicationClient::receive_messages(client);
+                    match protocol_kind {
+                        HubProtocolKind::Json => {
+                            let messages = CommunicationClient::receive_text_messages(client);
 
-                    for message in messages {
-                        let ping = MessageParser::parse_message::<Ping>(&message);
+                            for message in messages {
+                                let ping = MessageParser::parse_message::<Ping>(&message);
 
-                        if ping.is_ok() {
-                            let r = storage.process_message(message, ping.unwrap().message_type());
+                                if ping.is_ok() {
+                                    let r = storage.process_message(MessagePayload::Text(message), ping.unwrap().message_type());
 
-                            if r.is_err() {
-                                error!("Message could not be processed: {}", r.unwrap_err());
+                                    if r.is_err() {
+                                        error!("Message could not be processed: {}", r.unwrap_err());
+                                    }
+                                } else {
+                                    error!("Message could not be parsed: {:?}", message);
+                                }
                             }
-                        } else {
-                            error!("Message could not be parsed: {:?}", message);
-                        }
+                        },
+                        #[cfg(feature = "messagepack")]
+                        HubProtocolKind::MessagePack => {
+                            let payloads = CommunicationClient::receive_binary_messages(client);
+
+                            for payload in payloads {
+                                match crate::protocol::msgpack::read_message_type(&payload) {
+                                    Ok(msg_type) => {
+                                        let r = storage.process_message(MessagePayload::Binary(payload), msg_type);
+                                        if r.is_err() {
+                                            error!("Error processing msgpack message: {}", r.unwrap_err());
+                                        }
+                                    },
+                                    Err(e) => error!("Cannot read msgpack message type: {}", e),
+                                }
+                            }
+                        },
                     }
                 },
             }
@@ -247,14 +309,30 @@ impl CommunicationClient {
         }
     }
 
-    fn receive_messages(client: &Rc<RefCell<wasm_sockets::PollingClient>>) -> Vec<String> {
+    fn receive_text_messages(client: &Rc<RefCell<wasm_sockets::PollingClient>>) -> Vec<String> {
         let response = client.borrow_mut().receive();
         let mut ret = Vec::new();
 
         for msg in response {
-            for message in CommunicationClient::get_messages(msg).into_iter() {
+            for message in CommunicationClient::get_text_messages(msg).into_iter() {
                 if message.len() > 0 {
                     ret.push(message);
+                }
+            }
+        }
+
+        ret
+    }
+
+    #[cfg(feature = "messagepack")]
+    fn receive_binary_messages(client: &Rc<RefCell<wasm_sockets::PollingClient>>) -> Vec<Vec<u8>> {
+        let response = client.borrow_mut().receive();
+        let mut ret = Vec::new();
+
+        for msg in response {
+            for payload in CommunicationClient::get_binary_messages(msg).into_iter() {
+                if !payload.is_empty() {
+                    ret.push(payload);
                 }
             }
         }

@@ -1,45 +1,49 @@
 [package]
 name = "signalr-client"
-version = "0.1.2"
+version = "0.2.0"
 edition = "2021"
 authors = ["Daniel Leiszen <daniel.leiszen@gmail.com>"]
-description = "A Rust library for calling SignalR hubs from a Rust cross-platform application, supporting WASM and non WASM targets."
+description = "A Rust library for calling SignalR hubs, supporting JSON and MessagePack protocols, with WASM and native (Tokio) targets."
 license = "MIT"
 repository = "https://github.com/danielleiszen/rust_signalr_client"
 homepage = "https://github.com/danielleiszen/rust_signalr_client"
 documentation = "https://docs.rs/signalr-client"
 readme = "README.md"
-keywords = ["signalr", "rust", "websockets", "tokio", "wasm"]
+keywords = ["signalr", "rust", "websockets", "tokio", "messagepack"]
 categories = ["network-programming", "web-programming", "asynchronous"]
 
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+default = []
+messagepack = ["rmp", "rmp-serde", "rmpv"]
+
 [dependencies]
 console_error_panic_hook = "0.1.7"
 console_log = "1.0.0"
-log = "0.4.28"
+log = "0.4.29"
 serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.145"
+serde_json = "1.0.149"
 serde_repr = "0.1.20"
-futures = "0.3.31"
-ehttp = "0.5.0"
+futures = "0.3.32"
+ehttp = "0.6.0"
 test-log = {version = "0.2.19", features = ["log"] }
 base64 = "0.22.1"
+rmp = { version = "0.8", optional = true }
+rmp-serde = { version = "1.3", optional = true }
+rmpv = { version = "1.3", optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-wasm-bindgen = "0.2.106"
-wasm-bindgen-futures = "0.4.56"
+wasm-bindgen = "0.2.108"
+wasm-bindgen-futures = "0.4.58"
 wasm-sockets = "1.0.0"
 wasm-timer = "0.2.5"
 async-std = "1.13.2"
-async-std = "1.13.2"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-tokio = { version = "1.48.0", features = ["full"] }
-tokio-websockets = { version = "0.13.0", features = ["sha1_smol", "fastrand", "client", "native-tls"] }
-tokio = { version = "1.48.0", features = ["full"] }
-tokio-websockets = { version = "0.13.0", features = ["sha1_smol", "fastrand", "client", "native-tls"] }
+tokio = { version = "1.49.0", features = ["full"] }
+tokio-websockets = { version = "0.13.1", features = ["sha1_smol", "fastrand", "client", "native-tls"] }
 tokio-native-tls = "0.3.1"
 http = { version = "1.4.0", default-features = false, features = ["std"] }
 

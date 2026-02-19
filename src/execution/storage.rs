@@ -1,6 +1,6 @@
 use log::{debug, info};
 use serde::de::DeserializeOwned;
-use crate::{completer::{CompletedFuture, ManualFuture, ManualFutureCompleter, ManualStream}, {client::SignalRClient, protocol::{invoke::{Invocation, PossibleInvocation}, messages::MessageParser, negotiate::{self, MessageType}}, InvocationContext}};
+use crate::{completer::{CompletedFuture, ManualFuture, ManualFutureCompleter, ManualStream}, {client::SignalRClient, protocol::{hub_protocol::MessagePayload, invoke::{Invocation, PossibleInvocation}, messages::MessageParser, negotiate::{self, MessageType}}, InvocationContext}};
 use super::{callback::CallbackAction, enumerable::EnumerableAction, invocation::InvocationAction, UpdatableAction};
 
 #[allow(dead_code)]
@@ -77,34 +77,63 @@ pub trait Storage : Clone {
         f
     }
 
-    fn process_message(&mut self, message: String, message_type: MessageType) -> Result<(), String> {
+    fn process_message(&mut self, message: MessagePayload, message_type: MessageType) -> Result<(), String> {
         debug!("MESSAGE: {:?} -> {:?}", message_type, message);
 
         match message_type {
             negotiate::MessageType::Invocation => {
-                debug!("Server invocation {:?} -> {}", message_type, message);
-                let invocation = MessageParser::parse_message::<Invocation>(&message).unwrap();
+                let target = match &message {
+                    MessagePayload::Text(s) => {
+                        debug!("Server invocation {:?} -> {}", message_type, s);
+                        MessageParser::parse_message::<Invocation>(s).map(|inv| inv.get_target())
+                    },
+                    #[cfg(feature = "messagepack")]
+                    MessagePayload::Binary(data) => {
+                        let items = crate::protocol::msgpack::parse_msgpack_message(data)?;
+                        let inv = crate::protocol::msgpack::parse_invocation(&items)?;
+                        Ok(inv.target)
+                    },
+                }?;
 
-                self.update(invocation.get_target(), |i| {
+                self.update(target, |i| {
                     i.update_with(&message, message_type);
-                });    
+                });
             },
             negotiate::MessageType::StreamItem => {
-                let invocation = MessageParser::parse_message::<PossibleInvocation>(&message).unwrap();
+                let invocation_id = match &message {
+                    MessagePayload::Text(s) => {
+                        MessageParser::parse_message::<PossibleInvocation>(s).map(|p| p.invocation_id)
+                    },
+                    #[cfg(feature = "messagepack")]
+                    MessagePayload::Binary(data) => {
+                        let items = crate::protocol::msgpack::parse_msgpack_message(data)?;
+                        let si = crate::protocol::msgpack::parse_stream_item(&items)?;
+                        Ok(Some(si.invocation_id))
+                    },
+                }?;
 
-                if invocation.invocation_id.is_some() {
-                    self.update(invocation.invocation_id.unwrap(), |i| {
+                if let Some(id) = invocation_id {
+                    self.update(id, |i| {
                         i.update_with(&message, message_type);
-                    });    
+                    });
                 }
             },
             negotiate::MessageType::Completion => {
-                let invocation = MessageParser::parse_message::<PossibleInvocation>(&message).unwrap();                
+                let invocation_id = match &message {
+                    MessagePayload::Text(s) => {
+                        info!("Completition received {}", s);
+                        MessageParser::parse_message::<PossibleInvocation>(s).map(|p| p.invocation_id)
+                    },
+                    #[cfg(feature = "messagepack")]
+                    MessagePayload::Binary(data) => {
+                        let items = crate::protocol::msgpack::parse_msgpack_message(data)?;
+                        let comp = crate::protocol::msgpack::parse_completion(&items)?;
+                        info!("Completition received for {}", comp.invocation_id);
+                        Ok(Some(comp.invocation_id))
+                    },
+                }?;
 
-                info!("Completition received {}", message);
-
-                if invocation.invocation_id.is_some() {
-                    let key = invocation.invocation_id.unwrap();
+                if let Some(key) = invocation_id {
                     self.update(key.clone(), |i| {
                         i.update_with(&message, message_type);
                     });
@@ -113,16 +142,13 @@ pub trait Storage : Clone {
                 }
             },
             negotiate::MessageType::StreamInvocation => {
-                debug!("Stream invocation is arrived");                                        
+                debug!("Stream invocation is arrived");
             },
             negotiate::MessageType::CancelInvocation => {
-                debug!("Cancel invocation is arrived");                                        
+                debug!("Cancel invocation is arrived");
             },
             negotiate::MessageType::Ping => {
                 debug!("Ping is arrived");
-
-                // let json = MessageParser::to_json(&Ping::new()).unwrap();
-                // let _ = client.borrow().send_string(&json);
             },
             negotiate::MessageType::Close => {
                 debug!("Close is arrived");

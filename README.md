@@ -2,10 +2,10 @@
 
 [![Current Crates.io Version](https://img.shields.io/crates/v/signalr_client
 )](https://crates.io/crates/signalr_client)
-[![Documentation](https://img.shields.io/badge/docs-latest-blue)](https://docs.rs/signalr-client/0.1.1/signalr_client/)
+[![Documentation](https://img.shields.io/badge/docs-latest-blue)](https://docs.rs/signalr-client/latest/signalr_client/)
 ![license](https://shields.io/badge/license-MIT%2FApache--2.0-blue)
 
-I made this client because I could not find a client that supported my requirements calling a complex backend written in SignalR from a WASM frontend. This package was designed to overcome this limitation. It supports WebAssembly targets out of the box.
+I made this client because I could not find a client that supported my requirements calling a complex backend written in SignalR from a WASM frontend. This package was designed to overcome this limitation. It supports WebAssembly targets out of the box and both JSON and MessagePack hub protocols.
 
  Read more about SignalR in the [`offical documentation`](https://learn.microsoft.com/en-us/aspnet/core/signalr/introduction?view=aspnetcore-9.0).
 
@@ -19,10 +19,33 @@ signalr-client is a Rust library designed to provide a way to call SignalR hubs 
 ## Installation Instructions
 To use this package, add the following to your Cargo.toml:
 
-```
+```toml
 [dependencies]
-signalr-client = "0.1.1"
+signalr-client = "0.2.0"
 ```
+
+## MessagePack Protocol
+
+The library supports the SignalR MessagePack hub protocol as an optional feature. MessagePack uses a binary encoding format, which results in smaller messages and can improve throughput compared to JSON.
+
+To enable MessagePack support, add the `messagepack` feature:
+
+```toml
+[dependencies]
+signalr-client = { version = "0.2.0", features = ["messagepack"] }
+```
+
+Then use the `with_messagepack_protocol()` builder method when connecting:
+
+```rust
+let mut client = SignalRClient::connect_with("localhost", "hub", |c| {
+    c.with_port(5000);
+    c.with_messagepack_protocol();
+}).await.unwrap();
+```
+
+All other API calls (`invoke`, `enumerate`, `send`, `register`) work exactly the same regardless of protocol. The server must also have MessagePack protocol enabled (e.g., `.AddMessagePackProtocol()` in ASP.NET Core).
+
 ## Usage Examples
 
 Here is a complex test scenario demonstrating how to use the signalr-client package:

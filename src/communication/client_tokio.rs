@@ -1,6 +1,6 @@
 use std::{str::FromStr, sync::{Arc, Weak}};
 
-use crate::{execution::{Storage, UpdatableActionStorage}, protocol::{messages::{MessageParser, RECORD_SEPARATOR}, negotiate::{HandshakeRequest, Ping}}};
+use crate::{execution::{Storage, UpdatableActionStorage}, protocol::{hub_protocol::{HubProtocolKind, MessagePayload}, messages::{MessageParser, RECORD_SEPARATOR}, negotiate::{HandshakeRequest, Ping}}};
 
 use super::{Communication, reconnection::ReconnectionConfig};
 use futures::{stream::{SplitSink, SplitStream}, SinkExt, StreamExt};
@@ -22,6 +22,7 @@ pub struct ReconnectionContext {
     endpoint: Uri,
     actions: UpdatableActionStorage,
     reconnection_config: ReconnectionConfig,
+    protocol_kind: HubProtocolKind,
 }
 
 impl ReconnectionContext {
@@ -48,7 +49,7 @@ impl ReconnectionContext {
 
         info!("Manual reconnection attempt to {}...", self.endpoint);
 
-        match CommunicationClient::connect_to_server(self.endpoint.clone()).await {
+        match CommunicationClient::connect_to_server(self.endpoint.clone(), self.protocol_kind).await {
             Ok((write, read)) => {
                 let mut guard = state.lock().await;
 
@@ -63,13 +64,14 @@ impl ReconnectionContext {
                     actions: self.actions.clone(),
                     reconnection_config: self.reconnection_config.clone(),
                     user_handler: None, // Manual mode doesn't re-trigger automatic reconnection
+                    protocol_kind: self.protocol_kind,
                 };
 
                 let mut conn_struct = CommunicationConnection {
                     _receiver: None,
                     _sink: write,
                 };
-                conn_struct.start_receiving(read, self.actions.clone(), new_handler);
+                conn_struct.start_receiving(read, self.actions.clone(), new_handler, self.protocol_kind);
                 *guard = ConnectionState::Connected(Arc::new(Mutex::new(conn_struct)));
                 info!("Manual reconnection successful");
                 Ok(())
@@ -137,22 +139,41 @@ struct CommunicationConnection {
 }
 
 impl CommunicationConnection {
-    fn start_receiving(&mut self, mut stream: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>, mut storage: impl Storage + Send + 'static, disconnection_handler: impl CommunicationDisconnectionHandler + 'static) {
+    fn start_receiving(&mut self, mut stream: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>, mut storage: impl Storage + Send + 'static, disconnection_handler: impl CommunicationDisconnectionHandler + 'static, protocol_kind: HubProtocolKind) {
         let handle = tokio::spawn(async move {
             while let Some(item) = stream.next().await {
                 if item.is_ok() {
-                    for message in CommunicationClient::get_messages(item.unwrap()) {
-                        let ping = MessageParser::parse_message::<Ping>(&message);
+                    let ws_message = item.unwrap();
+                    match protocol_kind {
+                        HubProtocolKind::Json => {
+                            for message in CommunicationClient::get_text_messages(&ws_message) {
+                                let ping = MessageParser::parse_message::<Ping>(&message);
 
-                        if ping.is_ok() {
-                            let res = storage.process_message(message, ping.unwrap().message_type());
+                                if ping.is_ok() {
+                                    let res = storage.process_message(MessagePayload::Text(message), ping.unwrap().message_type());
 
-                            if res.is_err() {
-                                error!("Error occured parsing message {}", res.unwrap_err());
+                                    if res.is_err() {
+                                        error!("Error occured parsing message {}", res.unwrap_err());
+                                    }
+                                } else {
+                                    error!("Message could not be parsed: {:?}", message);
+                                }
                             }
-                        } else {
-                            error!("Message could not be parsed: {:?}", message);
-                        }
+                        },
+                        #[cfg(feature = "messagepack")]
+                        HubProtocolKind::MessagePack => {
+                            for payload in CommunicationClient::get_binary_messages(&ws_message) {
+                                match crate::protocol::msgpack::read_message_type(&payload) {
+                                    Ok(msg_type) => {
+                                        let res = storage.process_message(MessagePayload::Binary(payload), msg_type);
+                                        if res.is_err() {
+                                            error!("Error processing msgpack message: {}", res.unwrap_err());
+                                        }
+                                    },
+                                    Err(e) => error!("Cannot read msgpack message type: {}", e),
+                                }
+                            }
+                        },
                     }
                 }
             }
@@ -165,8 +186,12 @@ impl CommunicationConnection {
 
     async fn send<T: serde::Serialize>(&mut self, data: T) -> Result<(), String> {
         let json = MessageParser::to_json(&data).unwrap();
-        
+
         self._sink.send(Message::text(json)).await.map_err(|e| e.to_string())
+    }
+
+    async fn send_binary(&mut self, data: Vec<u8>) -> Result<(), String> {
+        self._sink.send(Message::binary(data)).await.map_err(|e| e.to_string())
     }
 
     fn stop_receiving(&mut self) {
@@ -216,16 +241,18 @@ pub struct CommunicationClient {
     _actions: UpdatableActionStorage,
     _reconnection_config: ReconnectionConfig,
     _disconnection_handler: Option<Arc<Box<dyn Fn(ReconnectionContext) + Send + Sync>>>,
+    _protocol_kind: HubProtocolKind,
 }
 
 impl Clone for CommunicationClient {
     fn clone(&self) -> Self {
-        Self { 
-            _endpoint: self._endpoint.clone(), 
+        Self {
+            _endpoint: self._endpoint.clone(),
             _state: self._state.clone(),
             _actions: self._actions.clone(),
             _reconnection_config: self._reconnection_config.clone(),
             _disconnection_handler: self._disconnection_handler.clone(),
+            _protocol_kind: self._protocol_kind,
         }
     }
 }
@@ -246,7 +273,11 @@ impl Communication for CommunicationClient {
     fn get_storage(&self) -> Result<crate::execution::UpdatableActionStorage, String> {
         Ok(self._actions.clone())
     }
-    
+
+    fn get_protocol_kind(&self) -> HubProtocolKind {
+        self._protocol_kind
+    }
+
     async fn send<T: serde::Serialize>(&mut self, data: T) -> Result<(), String> {
         let state = self._state.lock().await;
         match &*state {
@@ -255,6 +286,17 @@ impl Communication for CommunicationClient {
                 let mut connection = mutex.lock().await;
 
                 connection.send(data).await
+            },
+        }
+    }
+
+    async fn send_binary(&mut self, data: Vec<u8>) -> Result<(), String> {
+        let state = self._state.lock().await;
+        match &*state {
+            ConnectionState::NotConnected(reason) => Err(format!("Client is not connected, cannot send: {:?}", reason)),
+            ConnectionState::Connected(mutex) => {
+                let mut connection = mutex.lock().await;
+                connection.send_binary(data).await
             },
         }
     }
@@ -291,11 +333,12 @@ impl CommunicationClient {
         let endpoint = Uri::from_str(&configuration.get_endpoint()).expect(&format!("The endpoint Uri {:?} is invalid", configuration.get_endpoint().as_str()));
 
         CommunicationClient {
-            _endpoint: endpoint,           
+            _endpoint: endpoint,
             _state: Arc::new(Mutex::new(ConnectionState::NotConnected(DisconnectionReason::NeverOpened))),
             _actions: UpdatableActionStorage::new(),
             _reconnection_config: ReconnectionConfig::default(),
             _disconnection_handler: None,
+            _protocol_kind: configuration.get_protocol_kind(),
         }
     }
 
@@ -307,27 +350,28 @@ impl CommunicationClient {
         self._disconnection_handler = Some(Arc::new(Box::new(handler)));
     }
 
-    async fn connect_to_server(endpoint: Uri) -> Result<(SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>, SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>), String> {
+    async fn connect_to_server(endpoint: Uri, protocol_kind: HubProtocolKind) -> Result<(SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>, SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>), String> {
         let stream: Result<(WebSocketStream<MaybeTlsStream<TcpStream>>, http::Response<()>), tokio_websockets::Error>;
         info!("Connecting to endpoint {}", endpoint);
-         
+
         if Some("wss") == endpoint.scheme_str() {
             info!("Connection to secure endpoint...");
             let Ok(connector) = TlsConnector::new() else { return Err("Cannot create default TLS connector".to_string()); };
-        
+
             let connector = tokio_websockets::Connector::NativeTls(connector.into());
-            stream = ClientBuilder::from_uri(endpoint.clone()).connector(&connector).connect().await;             
+            stream = ClientBuilder::from_uri(endpoint.clone()).connector(&connector).connect().await;
         } else {
             info!("Connection to plain endpoint...");
             stream = ClientBuilder::from_uri(endpoint.clone()).connect().await;
-        }        
+        }
 
         match stream {
             Ok((ws, _)) => {
                 let (mut write, mut read) = ws.split();
-        
+
                 info!("Initiating handshake...");
-                let handshake = HandshakeRequest::new("json".to_string());
+                // Handshake is always JSON, even for MessagePack protocol
+                let handshake = HandshakeRequest::new(protocol_kind.protocol_name().to_string());
                 let message = MessageParser::to_json(&handshake).unwrap();
                 let hsres = write.send(Message::text(message)).await;
         
@@ -352,7 +396,7 @@ impl CommunicationClient {
     }
 
     async fn connect_internal(&mut self) -> Result<(), String> {
-        let res = CommunicationClient::connect_to_server(self._endpoint.clone()).await;
+        let res = CommunicationClient::connect_to_server(self._endpoint.clone(), self._protocol_kind).await;
 
         match res {
             Ok((write, read)) => {
@@ -367,9 +411,10 @@ impl CommunicationClient {
                     actions: self._actions.clone(),
                     reconnection_config: self._reconnection_config.clone(),
                     user_handler: self._disconnection_handler.clone(),
+                    protocol_kind: self._protocol_kind,
                 };
-        
-                connection.start_receiving(read, self._actions.clone(), handler);                
+
+                connection.start_receiving(read, self._actions.clone(), handler, self._protocol_kind);
                 
                 let mut state = self._state.lock().await;
                 *state = ConnectionState::Connected(Arc::new(Mutex::new(connection)));
@@ -380,7 +425,7 @@ impl CommunicationClient {
         }
     }
     
-    fn get_messages(message: Message) -> Vec<String> {
+    fn get_text_messages(message: &Message) -> Vec<String> {
         if message.is_text() {
             if let Some(txt) = message.as_text() {
                 return txt.split(RECORD_SEPARATOR)
@@ -392,6 +437,22 @@ impl CommunicationClient {
 
         Vec::new()
     }
+
+    #[cfg(feature = "messagepack")]
+    fn get_binary_messages(message: &Message) -> Vec<Vec<u8>> {
+        if message.is_binary() {
+            let data = message.as_payload();
+            match crate::protocol::msgpack::split_framed_messages(data) {
+                Ok(frames) => frames,
+                Err(e) => {
+                    error!("Failed to split binary frames: {}", e);
+                    Vec::new()
+                }
+            }
+        } else {
+            Vec::new()
+        }
+    }
 }
 
 struct ClientDisconnectionHandler {
@@ -402,6 +463,7 @@ struct ClientDisconnectionHandler {
     /// If set, user has full control over reconnection (manual mode).
     /// If None, automatic reconnection is used.
     user_handler: Option<Arc<Box<dyn Fn(ReconnectionContext) + Send + Sync>>>,
+    protocol_kind: HubProtocolKind,
 }
 
 impl CommunicationDisconnectionHandler for ClientDisconnectionHandler {
@@ -411,6 +473,7 @@ impl CommunicationDisconnectionHandler for ClientDisconnectionHandler {
         let actions = self.actions.clone();
         let config = self.reconnection_config.clone();
         let user_handler = self.user_handler.clone();
+        let protocol_kind = self.protocol_kind;
 
         tokio::spawn(async move {
             // Check if locally closed - if so, don't do anything
@@ -437,6 +500,7 @@ impl CommunicationDisconnectionHandler for ClientDisconnectionHandler {
                     endpoint: endpoint.clone(),
                     actions: actions.clone(),
                     reconnection_config: config.clone(),
+                    protocol_kind,
                 };
 
                 info!("Connection dropped. Calling user's disconnection handler (manual mode).");
@@ -460,7 +524,7 @@ impl CommunicationDisconnectionHandler for ClientDisconnectionHandler {
                     tokio::time::sleep(d).await;
                     info!("Reconnecting to {} (attempt {})...", endpoint, retry_count + 1);
 
-                    match CommunicationClient::connect_to_server(endpoint.clone()).await {
+                    match CommunicationClient::connect_to_server(endpoint.clone(), protocol_kind).await {
                         Ok((write, read)) => {
                              if let Some(s) = state.upgrade() {
                                 let mut guard = s.lock().await;
@@ -474,13 +538,14 @@ impl CommunicationDisconnectionHandler for ClientDisconnectionHandler {
                                     actions: actions.clone(),
                                     reconnection_config: config.clone(),
                                     user_handler: None, // Automatic mode continues without user handler
+                                    protocol_kind,
                                 };
 
                                 let mut conn_struct = CommunicationConnection {
                                     _receiver: None,
                                     _sink: write,
                                 };
-                                conn_struct.start_receiving(read, actions.clone(), new_handler);
+                                conn_struct.start_receiving(read, actions.clone(), new_handler, protocol_kind);
                                 *guard = ConnectionState::Connected(Arc::new(Mutex::new(conn_struct)));
                                 info!("Reconnected successfully (automatic mode)");
                                 return;

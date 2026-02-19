@@ -16,6 +16,10 @@ pub struct Invocation {
     pub arguments: Option<Vec::<serde_json::Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream_ids: Option<Vec<String>>,
+    /// Raw MessagePack bytes for each argument (array format for .NET StandardResolver compatibility).
+    #[serde(skip)]
+    #[cfg(feature = "messagepack")]
+    pub(crate) msgpack_args: Option<Vec<Vec<u8>>>,
 }
 
 impl Invocation {
@@ -27,6 +31,8 @@ impl Invocation {
             target: target.into(),
             arguments: Some(Vec::new()),
             stream_ids: None,
+            #[cfg(feature = "messagepack")]
+            msgpack_args: Some(Vec::new()),
         }
     }
 
@@ -38,16 +44,30 @@ impl Invocation {
             target: target.into(),
             arguments: Some(Vec::new()),
             stream_ids: None,
+            #[cfg(feature = "messagepack")]
+            msgpack_args: Some(Vec::new()),
         }
     }
 
     pub fn with_argument<T: Serialize>(&mut self, data: T) -> Result<(), String> {
+        // Also serialize to msgpack bytes (array format) for MessagePack protocol
+        #[cfg(feature = "messagepack")]
+        {
+            let msgpack_bytes = rmp_serde::to_vec(&data)
+                .map_err(|e| format!("MessagePack serialization error: {}", e))?;
+            if let Some(ref mut vec) = self.msgpack_args {
+                vec.push(msgpack_bytes);
+            } else {
+                self.msgpack_args = Some(vec![msgpack_bytes]);
+            }
+        }
+
         let rson = MessageParser::to_json_value(&data);
 
         if rson.is_ok() {
             let json = rson.unwrap();
             let vec: Vec<serde_json::Value>;
-        
+
             if let Some(ref mut vec) = self.arguments {
                 vec.push(json);
             } else {
@@ -84,6 +104,10 @@ impl Invocation {
 
     pub(crate) fn get_target(&self) -> String {
         self.target.clone()
+    }
+
+    pub(crate) fn get_message_type(&self) -> u8 {
+        self.r#type as u8
     }
 }
 
