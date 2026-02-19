@@ -1,5 +1,6 @@
 use crate::client::client::DisconnectionHandler;
 use crate::communication::reconnection::ReconnectionConfig;
+use crate::protocol::hub_protocol::HubProtocolKind;
 
 #[derive(Clone)]
 pub(crate) enum Authentication {
@@ -21,6 +22,7 @@ pub struct ConnectionConfiguration {
     _authentication: Authentication,
     _disconnection: Option<Box<dyn DisconnectionHandler + Send + Sync>>,
     _reconnection: ReconnectionConfig,
+    _protocol: HubProtocolKind,
 }
 
 impl ConnectionConfiguration {
@@ -33,6 +35,7 @@ impl ConnectionConfiguration {
             _port: None,
             _disconnection: None,
             _reconnection: ReconnectionConfig::default(),
+            _protocol: HubProtocolKind::default(),
         }
     }
 
@@ -244,5 +247,17 @@ impl ConnectionConfiguration {
     pub fn with_reconnection_policy(&mut self, config: ReconnectionConfig) -> &ConnectionConfiguration {
         self._reconnection = config;
         self
+    }
+
+    /// Configures the connection to use the MessagePack hub protocol instead of JSON.
+    /// Requires the `messagepack` cargo feature to be enabled.
+    #[cfg(feature = "messagepack")]
+    pub fn with_messagepack_protocol(&mut self) -> &ConnectionConfiguration {
+        self._protocol = HubProtocolKind::MessagePack;
+        self
+    }
+
+    pub(crate) fn get_protocol_kind(&self) -> HubProtocolKind {
+        self._protocol
     }
 }

@@ -1,7 +1,7 @@
 use log::error;
 use serde::de::DeserializeOwned;
 
-use crate::{completer::{ManualStream, ManualStreamCompleter}, protocol::{messages::MessageParser, invoke::Completion, negotiate::MessageType, streaming::StreamItem}};
+use crate::{completer::{ManualStream, ManualStreamCompleter}, protocol::{hub_protocol::MessagePayload, messages::MessageParser, invoke::Completion, negotiate::MessageType, streaming::StreamItem}};
 
 use super::actions::UpdatableAction;
 
@@ -35,28 +35,53 @@ impl<R: DeserializeOwned + Unpin> Drop for EnumerableAction<R> {
 }
 
 impl<R: DeserializeOwned + Unpin + Send> UpdatableAction for EnumerableAction<R> {
-    fn update_with(&mut self, message: &str, message_type: MessageType) {
+    fn update_with(&mut self, message: &MessagePayload, message_type: MessageType) {
         match message_type {
-            MessageType::Invocation => panic!("Cannot update stream {} with message {:?}", self.invocation_id, message),
             MessageType::StreamItem => {
-                if let Ok(item) = MessageParser::parse_message::<StreamItem<R>>(message) {
-                    self.completer.push(item.item);
-                } else {
-                    error!("Cannot update stream {} with unparseable item {}", self.invocation_id, message);
+                match message {
+                    MessagePayload::Text(s) => {
+                        if let Ok(item) = MessageParser::parse_message::<StreamItem<R>>(s) {
+                            self.completer.push(item.item);
+                        } else {
+                            error!("Cannot update stream {} with unparseable item {}", self.invocation_id, s);
+                        }
+                    },
+                    #[cfg(feature = "messagepack")]
+                    MessagePayload::Binary(data) => {
+                        match crate::protocol::msgpack::parse_msgpack_message(data) {
+                            Ok(items) => {
+                                match crate::protocol::msgpack::parse_stream_item(&items) {
+                                    Ok(si) => {
+                                        match crate::protocol::msgpack::value_to_type::<R>(&si.item) {
+                                            Ok(item) => self.completer.push(item),
+                                            Err(e) => error!("Cannot deserialize stream item: {}", e),
+                                        }
+                                    },
+                                    Err(e) => error!("Cannot parse msgpack stream item: {}", e),
+                                }
+                            },
+                            Err(e) => error!("Cannot parse msgpack message: {}", e),
+                        }
+                    },
                 }
             },
             MessageType::Completion => {
-                if let Ok(_) = MessageParser::parse_message::<Completion<R>>(message) {
-                    self.completer.close();
-                } else {
-                    error!("Cannot parse completition: {}", message);
+                match message {
+                    MessagePayload::Text(s) => {
+                        if let Ok(_) = MessageParser::parse_message::<Completion<R>>(s) {
+                            self.completer.close();
+                        } else {
+                            error!("Cannot parse completition: {}", s);
+                        }
+                    },
+                    #[cfg(feature = "messagepack")]
+                    MessagePayload::Binary(_) => {
+                        // MessagePack completion for streams just means "stream ended"
+                        self.completer.close();
+                    },
                 }
             },
-            MessageType::StreamInvocation => panic!("Cannot update stream {} with message {:?}", self.invocation_id, message),
-            MessageType::CancelInvocation => panic!("Cannot update stream {} with message {:?}", self.invocation_id, message),
-            MessageType::Ping => panic!("Cannot update stream {} with message {:?}", self.invocation_id, message),
-            MessageType::Close => panic!("Cannot update stream {} with message {:?}", self.invocation_id, message),
-            MessageType::Other => panic!("Cannot update stream {} with message {:?}", self.invocation_id, message),
+            _ => error!("Cannot update stream {} with message type {:?}", self.invocation_id, message_type),
         }
     }
 

@@ -5,6 +5,7 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use crate::communication::{Communication, CommunicationClient, HttpClient};
+use crate::protocol::hub_protocol::HubProtocolKind;
 use crate::protocol::invoke::Invocation;
 use crate::execution::{ArgumentConfiguration, CallbackHandler, Storage, StorageUnregistrationHandler, UpdatableActionStorage};
 
@@ -410,7 +411,7 @@ impl SignalRClient {
         }
 
         if let Some(ref mut conn) = self._connection {
-            let res = conn.send(&invocation).await;
+            let res = Self::send_invocation(conn, &invocation).await;
 
             if res.is_ok() {
                 Ok(ret.await)
@@ -498,7 +499,7 @@ impl SignalRClient {
         }
 
         if let Some(ref mut conn) = self._connection {
-            conn.send(&invocation).await
+            Self::send_invocation(conn, &invocation).await
         } else {
             Err("Not connected".to_string())
         }
@@ -592,10 +593,50 @@ impl SignalRClient {
         }
 
         if let Some(ref mut conn) = self._connection {
-            let _ = conn.send(&invocation).await;
+            let _ = Self::send_invocation(conn, &invocation).await;
         }
 
         res
+    }
+
+    async fn send_invocation(conn: &mut CommunicationClient, invocation: &Invocation) -> Result<(), String> {
+        match conn.get_protocol_kind() {
+            HubProtocolKind::Json => {
+                conn.send(invocation).await
+            },
+            #[cfg(feature = "messagepack")]
+            HubProtocolKind::MessagePack => {
+                // Use pre-serialized msgpack bytes (array format) if available,
+                // falling back to JSON→msgpack conversion for arguments without typed data.
+                let msgpack_args: Vec<rmpv::Value> = if let Some(ref raw_args) = invocation.msgpack_args {
+                    raw_args.iter()
+                        .map(|bytes| {
+                            rmpv::decode::read_value(&mut std::io::Cursor::new(bytes))
+                                .unwrap_or(rmpv::Value::Nil)
+                        })
+                        .collect()
+                } else {
+                    invocation.arguments
+                        .as_ref()
+                        .map(|args| args.iter()
+                            .map(|a| crate::protocol::msgpack::json_value_to_msgpack(a))
+                            .collect())
+                        .unwrap_or_default()
+                };
+
+                let payload = crate::protocol::msgpack::encode_invocation(
+                    invocation.get_message_type(),
+                    &None,
+                    &invocation.get_invocation_id(),
+                    &invocation.get_target(),
+                    &msgpack_args,
+                    &invocation.stream_ids,
+                )?;
+
+                let framed = crate::protocol::msgpack::frame_message(&payload);
+                conn.send_binary(framed).await
+            },
+        }
     }
 
     pub fn disconnect(mut self) {

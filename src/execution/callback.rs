@@ -1,4 +1,4 @@
-use crate::{client::SignalRClient, protocol::{invoke::Invocation, negotiate::MessageType}, InvocationContext};
+use crate::{client::SignalRClient, protocol::{hub_protocol::MessagePayload, invoke::Invocation, negotiate::MessageType}, InvocationContext};
 use crate::protocol::messages::MessageParser;
 use super::actions::UpdatableAction;
 
@@ -20,15 +20,44 @@ impl CallbackAction {
 }
 
 impl UpdatableAction for CallbackAction {
-    fn update_with(&mut self, message: &str, message_type: MessageType) {
+    fn update_with(&mut self, message: &MessagePayload, message_type: MessageType) {
         match message_type {
             MessageType::Invocation => {
-                let invocation: Invocation = MessageParser::parse_message(message).unwrap();
-                let context = InvocationContext::create(self.client.clone(), invocation);
+                match message {
+                    MessagePayload::Text(s) => {
+                        let invocation: Invocation = MessageParser::parse_message(s).unwrap();
+                        let context = InvocationContext::create(self.client.clone(), invocation);
+                        (self.callback)(context);
+                    },
+                    #[cfg(feature = "messagepack")]
+                    MessagePayload::Binary(data) => {
+                        match crate::protocol::msgpack::parse_msgpack_message(data) {
+                            Ok(items) => {
+                                match crate::protocol::msgpack::parse_invocation(&items) {
+                                    Ok(parsed) => {
+                                        // Convert rmpv arguments to serde_json::Value for InvocationContext compatibility
+                                        let json_args: Vec<serde_json::Value> = parsed.arguments.iter()
+                                            .map(crate::protocol::msgpack::msgpack_value_to_json)
+                                            .collect();
 
-                (self.callback)(context);
+                                        let mut invocation = Invocation::create_single(parsed.target);
+                                        invocation.arguments = Some(json_args);
+                                        if let Some(id) = parsed.invocation_id {
+                                            invocation.with_invocation_id(id);
+                                        }
+
+                                        let context = InvocationContext::create(self.client.clone(), invocation);
+                                        (self.callback)(context);
+                                    },
+                                    Err(e) => log::error!("Cannot parse msgpack invocation: {}", e),
+                                }
+                            },
+                            Err(e) => log::error!("Cannot parse msgpack message: {}", e),
+                        }
+                    },
+                }
             },
-            _ => panic!("Callbacks accept only invocation data"),
+            _ => log::error!("Callbacks accept only invocation data, got {:?}", message_type),
         }
     }
 
