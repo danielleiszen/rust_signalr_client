@@ -106,7 +106,8 @@ fn encode_headers(buf: &mut Vec<u8>, headers: &Option<HashMap<String, String>>) 
 }
 
 /// Encode an Invocation (type 1) or StreamInvocation (type 4).
-/// Layout: [Type, Headers, InvocationId?, Target, Arguments, StreamIds?]
+/// Layout: [Type, Headers, InvocationId?, Target, Arguments, StreamIds]
+/// Always writes 6 elements to match the .NET SignalR MessagePack protocol.
 pub fn encode_invocation(
     msg_type: u8,
     headers: &Option<HashMap<String, String>>,
@@ -117,10 +118,8 @@ pub fn encode_invocation(
 ) -> Result<Vec<u8>, String> {
     let mut buf = Vec::new();
 
-    let has_stream_ids = stream_ids.as_ref().map_or(false, |ids| !ids.is_empty());
-    let array_len: u32 = if has_stream_ids { 6 } else { 5 };
-
-    rmp::encode::write_array_len(&mut buf, array_len).map_err(|e| e.to_string())?;
+    // Always 6 elements - .NET SignalR MessagePack protocol expects exactly 6
+    rmp::encode::write_array_len(&mut buf, 6).map_err(|e| e.to_string())?;
     rmp::encode::write_uint(&mut buf, msg_type as u64).map_err(|e| e.to_string())?;
     encode_headers(&mut buf, headers)?;
 
@@ -136,14 +135,53 @@ pub fn encode_invocation(
     rmpv::encode::write_value(&mut buf, &rmpv::Value::Array(arguments.to_vec()))
         .map_err(|e| e.to_string())?;
 
-    // StreamIds (optional)
-    if let Some(ids) = stream_ids {
-        if !ids.is_empty() {
-            rmp::encode::write_array_len(&mut buf, ids.len() as u32).map_err(|e| e.to_string())?;
-            for id in ids {
-                rmp::encode::write_str(&mut buf, id).map_err(|e| e.to_string())?;
-            }
-        }
+    // StreamIds (always present, empty array if none)
+    let ids = stream_ids.as_deref().unwrap_or(&[]);
+    rmp::encode::write_array_len(&mut buf, ids.len() as u32).map_err(|e| e.to_string())?;
+    for id in ids {
+        rmp::encode::write_str(&mut buf, id).map_err(|e| e.to_string())?;
+    }
+
+    Ok(buf)
+}
+
+/// Encode an Invocation using raw pre-serialized argument bytes.
+/// Embeds each argument's bytes directly without rmpv round-trip.
+/// Always writes 6 elements to match the .NET SignalR MessagePack protocol.
+pub fn encode_invocation_raw(
+    msg_type: u8,
+    invocation_id: &Option<String>,
+    target: &str,
+    raw_args: &[Vec<u8>],
+    stream_ids: &Option<Vec<String>>,
+) -> Result<Vec<u8>, String> {
+    let mut buf = Vec::new();
+
+    // Always 6 elements - .NET SignalR MessagePack protocol expects exactly 6
+    rmp::encode::write_array_len(&mut buf, 6).map_err(|e| e.to_string())?;
+    rmp::encode::write_uint(&mut buf, msg_type as u64).map_err(|e| e.to_string())?;
+    // Empty headers
+    rmp::encode::write_map_len(&mut buf, 0).map_err(|e| e.to_string())?;
+
+    // InvocationId
+    match invocation_id {
+        Some(id) => rmp::encode::write_str(&mut buf, id).map_err(|e| e.to_string())?,
+        None => rmp::encode::write_nil(&mut buf).map_err(|e| e.to_string())?,
+    }
+
+    rmp::encode::write_str(&mut buf, target).map_err(|e| e.to_string())?;
+
+    // Arguments array - write array header then embed raw bytes directly
+    rmp::encode::write_array_len(&mut buf, raw_args.len() as u32).map_err(|e| e.to_string())?;
+    for arg_bytes in raw_args {
+        buf.extend_from_slice(arg_bytes);
+    }
+
+    // StreamIds (always present, empty array if none)
+    let ids = stream_ids.as_deref().unwrap_or(&[]);
+    rmp::encode::write_array_len(&mut buf, ids.len() as u32).map_err(|e| e.to_string())?;
+    for id in ids {
+        rmp::encode::write_str(&mut buf, id).map_err(|e| e.to_string())?;
     }
 
     Ok(buf)

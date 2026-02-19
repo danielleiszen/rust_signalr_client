@@ -50,7 +50,7 @@ impl Invocation {
     }
 
     pub fn with_argument<T: Serialize>(&mut self, data: T) -> Result<(), String> {
-        // Also serialize to msgpack bytes (array format) for MessagePack protocol
+        // Serialize to msgpack bytes for MessagePack protocol.
         #[cfg(feature = "messagepack")]
         {
             let msgpack_bytes = rmp_serde::to_vec(&data)
