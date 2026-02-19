@@ -71,10 +71,8 @@ impl<R: DeserializeOwned + Unpin + Send> UpdatableAction for InvocationAction<R>
                     MessagePayload::Binary(data) => {
                         match crate::protocol::msgpack::parse_msgpack_message(data) {
                             Ok(items) => {
-                                log::debug!("MsgPack completion for {}: raw items={:?}", self.invocation_id, items);
                                 match crate::protocol::msgpack::parse_completion(&items) {
                                     Ok(comp) => {
-                                        log::debug!("MsgPack completion result_kind={}, payload={:?}", comp.result_kind, comp.payload);
                                         match comp.result_kind {
                                             1 => {
                                                 let err = comp.payload

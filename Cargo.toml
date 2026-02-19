@@ -1,6 +1,6 @@
 [package]
 name = "signalr-client"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 authors = ["Daniel Leiszen <daniel.leiszen@gmail.com>"]
 description = "A Rust library for calling SignalR hubs, supporting JSON and MessagePack protocols, with WASM and native (Tokio) targets."

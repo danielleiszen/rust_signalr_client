@@ -50,10 +50,10 @@ impl Invocation {
     }
 
     pub fn with_argument<T: Serialize>(&mut self, data: T) -> Result<(), String> {
-        // Serialize to msgpack bytes for MessagePack protocol.
+        // Serialize to msgpack bytes (named map format) for MessagePack protocol.
         #[cfg(feature = "messagepack")]
         {
-            let msgpack_bytes = rmp_serde::to_vec(&data)
+            let msgpack_bytes = rmp_serde::to_vec_named(&data)
                 .map_err(|e| format!("MessagePack serialization error: {}", e))?;
             if let Some(ref mut vec) = self.msgpack_args {
                 vec.push(msgpack_bytes);

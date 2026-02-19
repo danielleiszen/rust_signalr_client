@@ -145,48 +145,6 @@ pub fn encode_invocation(
     Ok(buf)
 }
 
-/// Encode an Invocation using raw pre-serialized argument bytes.
-/// Embeds each argument's bytes directly without rmpv round-trip.
-/// Always writes 6 elements to match the .NET SignalR MessagePack protocol.
-pub fn encode_invocation_raw(
-    msg_type: u8,
-    invocation_id: &Option<String>,
-    target: &str,
-    raw_args: &[Vec<u8>],
-    stream_ids: &Option<Vec<String>>,
-) -> Result<Vec<u8>, String> {
-    let mut buf = Vec::new();
-
-    // Always 6 elements - .NET SignalR MessagePack protocol expects exactly 6
-    rmp::encode::write_array_len(&mut buf, 6).map_err(|e| e.to_string())?;
-    rmp::encode::write_uint(&mut buf, msg_type as u64).map_err(|e| e.to_string())?;
-    // Empty headers
-    rmp::encode::write_map_len(&mut buf, 0).map_err(|e| e.to_string())?;
-
-    // InvocationId
-    match invocation_id {
-        Some(id) => rmp::encode::write_str(&mut buf, id).map_err(|e| e.to_string())?,
-        None => rmp::encode::write_nil(&mut buf).map_err(|e| e.to_string())?,
-    }
-
-    rmp::encode::write_str(&mut buf, target).map_err(|e| e.to_string())?;
-
-    // Arguments array - write array header then embed raw bytes directly
-    rmp::encode::write_array_len(&mut buf, raw_args.len() as u32).map_err(|e| e.to_string())?;
-    for arg_bytes in raw_args {
-        buf.extend_from_slice(arg_bytes);
-    }
-
-    // StreamIds (always present, empty array if none)
-    let ids = stream_ids.as_deref().unwrap_or(&[]);
-    rmp::encode::write_array_len(&mut buf, ids.len() as u32).map_err(|e| e.to_string())?;
-    for id in ids {
-        rmp::encode::write_str(&mut buf, id).map_err(|e| e.to_string())?;
-    }
-
-    Ok(buf)
-}
-
 /// Encode Ping (type 6). Layout: [6]
 #[allow(dead_code)]
 pub fn encode_ping() -> Vec<u8> {

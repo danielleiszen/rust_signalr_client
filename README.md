@@ -21,7 +21,7 @@ To use this package, add the following to your Cargo.toml:
 
 ```toml
 [dependencies]
-signalr-client = "0.2.0"
+signalr-client = "0.2.1"
 ```
 
 ## MessagePack Protocol
@@ -32,7 +32,7 @@ To enable MessagePack support, add the `messagepack` feature:
 
 ```toml
 [dependencies]
-signalr-client = { version = "0.2.0", features = ["messagepack"] }
+signalr-client = { version = "0.2.1", features = ["messagepack"] }
 ```
 
 Then use the `with_messagepack_protocol()` builder method when connecting:
