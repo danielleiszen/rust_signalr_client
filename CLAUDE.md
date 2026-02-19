@@ -5,7 +5,7 @@
 A cross-platform Rust library for calling SignalR hubs, supporting both native (Tokio) and WebAssembly (WASM) targets. Published on crates.io as `signalr-client`.
 
 **Repository**: https://github.com/danielleiszen/rust_signalr_client
-**Version**: 0.1.2
+**Version**: 0.2.1
 **License**: MIT
 
 ## Architecture

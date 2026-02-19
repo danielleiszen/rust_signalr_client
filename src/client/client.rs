@@ -606,33 +606,36 @@ impl SignalRClient {
             },
             #[cfg(feature = "messagepack")]
             HubProtocolKind::MessagePack => {
-                // Use pre-serialized raw msgpack bytes if available (preserves exact
-                // rmp_serde encoding), falling back to JSON→msgpack conversion.
-                let payload = if let Some(ref raw_args) = invocation.msgpack_args {
-                    crate::protocol::msgpack::encode_invocation_raw(
-                        invocation.get_message_type(),
-                        &invocation.get_invocation_id(),
-                        &invocation.get_target(),
-                        raw_args,
-                        &invocation.stream_ids,
-                    )?
+                // Convert arguments to rmpv::Value with PascalCase keys
+                // to match .NET property naming convention.
+                let msgpack_args: Vec<rmpv::Value> = if let Some(ref raw_args) = invocation.msgpack_args {
+                    raw_args.iter()
+                        .map(|bytes| {
+                            let val = rmpv::decode::read_value(&mut std::io::Cursor::new(bytes))
+                                .unwrap_or(rmpv::Value::Nil);
+                            crate::protocol::msgpack::normalize_keys_to_pascal(&val)
+                        })
+                        .collect()
                 } else {
-                    let msgpack_args: Vec<rmpv::Value> = invocation.arguments
+                    invocation.arguments
                         .as_ref()
                         .map(|args| args.iter()
-                            .map(|a| crate::protocol::msgpack::json_value_to_msgpack(a))
+                            .map(|a| {
+                                let raw = crate::protocol::msgpack::json_value_to_msgpack(a);
+                                crate::protocol::msgpack::normalize_keys_to_pascal(&raw)
+                            })
                             .collect())
-                        .unwrap_or_default();
-
-                    crate::protocol::msgpack::encode_invocation(
-                        invocation.get_message_type(),
-                        &None,
-                        &invocation.get_invocation_id(),
-                        &invocation.get_target(),
-                        &msgpack_args,
-                        &invocation.stream_ids,
-                    )?
+                        .unwrap_or_default()
                 };
+
+                let payload = crate::protocol::msgpack::encode_invocation(
+                    invocation.get_message_type(),
+                    &None,
+                    &invocation.get_invocation_id(),
+                    &invocation.get_target(),
+                    &msgpack_args,
+                    &invocation.stream_ids,
+                )?;
 
                 let framed = crate::protocol::msgpack::frame_message(&payload);
                 conn.send_binary(framed).await
