@@ -50,7 +50,7 @@ impl<R: DeserializeOwned + Unpin> Drop for InvocationAction<R> {
     }
 }
 
-impl<R: DeserializeOwned + Unpin> UpdatableAction for InvocationAction<R> {
+impl<R: DeserializeOwned + Unpin + Send> UpdatableAction for InvocationAction<R> {
     fn update_with(&mut self, message: &str, message_type: MessageType) {
         // debug!("Updating invocation {}", self.invocation_id);
 

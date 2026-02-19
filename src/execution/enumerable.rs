@@ -34,7 +34,7 @@ impl<R: DeserializeOwned + Unpin> Drop for EnumerableAction<R> {
     }
 }
 
-impl<R: DeserializeOwned + Unpin> UpdatableAction for EnumerableAction<R> {
+impl<R: DeserializeOwned + Unpin + Send> UpdatableAction for EnumerableAction<R> {
     fn update_with(&mut self, message: &str, message_type: MessageType) {
         match message_type {
             MessageType::Invocation => panic!("Cannot update stream {} with message {:?}", self.invocation_id, message),

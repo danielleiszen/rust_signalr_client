@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use futures::Stream;
 use log::info;
 use serde::de::DeserializeOwned;
@@ -9,23 +10,81 @@ use crate::execution::{ArgumentConfiguration, CallbackHandler, Storage, StorageU
 
 use super::{ConnectionConfiguration, InvocationContext};
 
+#[cfg(not(target_arch = "wasm32"))]
+use crate::communication::ReconnectionContext;
+
+/// Trait for handling disconnection events.
+///
+/// When a connection drops, the `on_disconnected` method is called with a
+/// `ReconnectionHandler` that allows manual reconnection.
+///
+/// **Important**: When you provide a `DisconnectionHandler`, automatic reconnection
+/// is disabled. You have full control over when and if to reconnect.
+///
+/// # Example
+/// ```ignore
+/// struct MyHandler;
+///
+/// impl DisconnectionHandler for MyHandler {
+///     fn on_disconnected(&self, handler: ReconnectionHandler) {
+///         // Option 1: Reconnect immediately
+///         tokio::spawn(async move {
+///             if let Err(e) = handler.reconnect().await {
+///                 eprintln!("Failed to reconnect: {}", e);
+///             }
+///         });
+///
+///         // Option 2: Reconnect with policy (uses configured backoff)
+///         // handler.reconnect_with_policy().await;
+///
+///         // Option 3: Don't reconnect at all
+///     }
+/// }
+/// ```
+pub trait DisconnectionHandler {
+    fn on_disconnected(&self, reconnection: ReconnectionHandler);
+}
+
+/// Handler for manual reconnection after a connection drops.
+///
+/// This is passed to your `DisconnectionHandler` when the connection is lost.
+/// Use it to manually trigger reconnection attempts.
+#[cfg(not(target_arch = "wasm32"))]
+pub struct ReconnectionHandler {
+    context: ReconnectionContext,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl ReconnectionHandler {
+    /// Attempt to reconnect once. Returns Ok(()) on success.
+    pub async fn reconnect(&self) -> Result<(), String> {
+        self.context.reconnect().await
+    }
+
+    /// Attempt reconnection with automatic retries using the configured policy.
+    /// Returns Ok(()) on success, Err if all attempts are exhausted.
+    pub async fn reconnect_with_policy(&self) -> Result<(), String> {
+        self.context.reconnect_with_policy().await
+    }
+
+    /// Check if currently connected
+    pub async fn is_connected(&self) -> bool {
+        self.context.is_connected().await
+    }
+
+    /// Get the endpoint URI as a string
+    pub fn endpoint(&self) -> String {
+        self.context.endpoint().to_string()
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+pub struct ReconnectionHandler {}
+
 /// A client for connecting to and interacting with a SignalR hub.
 ///
 /// The `SignalRClient` can be used to invoke methods on the hub, send messages, and register callbacks.
 /// The client can be cloned and used freely across different parts of your application.
-///
-/// # Examples
-///
-/// ```
-/// // Connect to the SignalR server with custom configuration
-/// let mut client = SignalRClient::connect_with("localhost", "test", |c| {
-///     c.with_port(5220); // Set the port to 5220
-///     c.unsecure(); // Use an unsecure (HTTP) connection
-/// }).await.unwrap();
-///
-/// // Invoke the "SingleEntity" method and assert the result
-/// let re = client.invoke::<TestEntity>("SingleEntity".to_string()).await;
-/// assert!(re.is_ok());
 ///
 /// // Unwrap the result and assert the entity's text
 /// let entity = re.unwrap();
@@ -122,12 +181,14 @@ use super::{ConnectionConfiguration, InvocationContext};
 /// ```
 pub struct SignalRClient {
     _actions: UpdatableActionStorage,
-    _connection: CommunicationClient,
+    _connection: Option<CommunicationClient>,
 }
 
 impl Drop for SignalRClient {
     fn drop(&mut self) {
-        self._connection.disconnect();
+        if let Some(mut conn) = self._connection.take() {
+            futures::executor::block_on(conn.disconnect());
+        }
     }
 }
 
@@ -162,16 +223,6 @@ impl SignalRClient {
     ///
     /// # Returns
     ///
-    /// * `Result<Self, String>` - On success, returns an instance of `Self`. On failure, returns an error message as a `String`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// let client = SignalRClient::connect_with("localhost", "test", |c| {
-    ///     c.with_port(5220);
-    ///     c.unsecure();
-    /// }).await.unwrap();
-    /// ```
     pub async fn connect_with<F>(domain: &str, hub: &str, options: F) -> Result<Self, String>
         where F: FnMut(&mut ConnectionConfiguration) 
     {
@@ -188,6 +239,9 @@ impl SignalRClient {
             (ops)(&mut config);
         }
 
+        let disconnection_handler = config.get_disconnection_handler();
+        let reconnection_config = config.get_reconnection_config();
+
         let result = HttpClient::negotiate(config).await;
 
         if result.is_ok() {
@@ -197,13 +251,25 @@ impl SignalRClient {
             let res = CommunicationClient::connect(&configuration).await;
 
             if res.is_ok() {
-                let client  = res.unwrap();
+                let mut client  = res.unwrap();
                 let storage = client.get_storage();
 
                 if storage.is_ok() {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        client.set_reconnection_config(reconnection_config);
+                        if let Some(handler) = disconnection_handler {
+                            let handler = Arc::new(handler);
+                            let h_clone = handler.clone();
+                            client.set_disconnection_handler(move |context| {
+                                h_clone.on_disconnected(ReconnectionHandler { context });
+                            });
+                        }
+                    }
+
                     let ret = SignalRClient {
                         _actions: storage.unwrap(),
-                        _connection: client
+                        _connection: Some(client),
                     };    
     
                     Ok(ret)    
@@ -244,7 +310,7 @@ impl SignalRClient {
     /// // Unregister the callback when it's no longer needed
     /// handler.unregister();
     /// ```   
-    pub fn register(&mut self, target: String, callback: impl Fn(InvocationContext) + 'static) -> impl CallbackHandler
+    pub fn register(&mut self, target: String, callback: impl Fn(InvocationContext) + Send + 'static) -> impl CallbackHandler
     {
         // debug!("CLIENT registering invocation callback to {}", &target);
         self._actions.add_callback(target.clone(), callback, self.clone());
@@ -280,7 +346,7 @@ impl SignalRClient {
     ///     }
     /// }
     /// ```    
-    pub async fn invoke<T: 'static + DeserializeOwned + Unpin>(&mut self, target: String) -> Result<T, String> {
+    pub async fn invoke<T: 'static + DeserializeOwned + Unpin + Send>(&mut self, target: String) -> Result<T, String> {
         return self.invoke_internal(target, None::<fn(&mut ArgumentConfiguration)>).await;
     }
 
@@ -321,13 +387,13 @@ impl SignalRClient {
     ///     }
     /// }
     /// ```    
-    pub async fn invoke_with_args<T: 'static + DeserializeOwned + Unpin, F>(&mut self, target: String, configuration: F) -> Result<T, String>
+    pub async fn invoke_with_args<T: 'static + DeserializeOwned + Unpin + Send, F>(&mut self, target: String, configuration: F) -> Result<T, String>
         where F : FnMut(&mut ArgumentConfiguration)
     {
         return self.invoke_internal(target, Some(configuration)).await;
     }
 
-    async fn invoke_internal<T: 'static + DeserializeOwned + Unpin, F>(&mut self, target: String, configuration: Option<F>) -> Result<T, String>
+    async fn invoke_internal<T: 'static + DeserializeOwned + Unpin + Send, F>(&mut self, target: String, configuration: Option<F>) -> Result<T, String>
         where F : FnMut(&mut ArgumentConfiguration)
     {
         let invocation_id = self._actions.create_key(target.clone());
@@ -343,12 +409,16 @@ impl SignalRClient {
             invocation = args.build_invocation();
         }
 
-        let res = self._connection.send(&invocation).await;
+        if let Some(ref mut conn) = self._connection {
+            let res = conn.send(&invocation).await;
 
-        if res.is_ok() {
-            Ok(ret.await)
+            if res.is_ok() {
+                Ok(ret.await)
+            } else {
+                Err(res.err().unwrap())
+            }
         } else {
-            Err(res.err().unwrap())
+            Err("Not connected".to_string())
         }
     }
 
@@ -427,15 +497,20 @@ impl SignalRClient {
             invocation = args.build_invocation();
         }
 
-        let ret = self._connection.send(&invocation).await;
-        ret
+        if let Some(ref mut conn) = self._connection {
+            conn.send(&invocation).await
+        } else {
+            Err("Not connected".to_string())
+        }
     }
 
     pub(crate) async fn send_direct<T: Serialize>(&mut self, data: T) -> Result<(), String>
     {
-        let ret = self._connection.send(&data).await;
-        
-        ret
+        if let Some(ref mut conn) = self._connection {
+            conn.send(&data).await
+        } else {
+            Err("Not connected".to_string())
+        }
     }
 
     /// Calls a specific target method on the SignalR hub and returns a stream for receiving data asynchronously.
@@ -463,7 +538,7 @@ impl SignalRClient {
     ///     info!("Received entity: {}, {}", entity.text, entity.number);
     /// }
     /// ```
-    pub async fn enumerate<T: 'static + DeserializeOwned + Unpin>(&mut self, target: String) -> impl Stream<Item = T> {
+    pub async fn enumerate<T: 'static + DeserializeOwned + Unpin + Send>(&mut self, target: String) -> impl Stream<Item = T> {
         return self.enumerate_internal(target, None::<fn(&mut ArgumentConfiguration)>).await;
     }
 
@@ -495,13 +570,13 @@ impl SignalRClient {
     ///     info!("Received entity: {}, {}", entity.text, entity.number);
     /// }
     /// ```    
-    pub async fn enumerate_with_args<T: 'static + DeserializeOwned + Unpin, F>(&mut self, target: String, configuration: F) -> impl Stream<Item = T>
+    pub async fn enumerate_with_args<T: 'static + DeserializeOwned + Unpin + Send, F>(&mut self, target: String, configuration: F) -> impl Stream<Item = T>
         where F : FnMut(&mut ArgumentConfiguration)
     {
         return self.enumerate_internal(target, Some(configuration)).await;
     }
 
-    async fn enumerate_internal<T: 'static + DeserializeOwned + Unpin, F>(&mut self, target: String, configuration: Option<F>) -> impl Stream<Item = T>
+    async fn enumerate_internal<T: 'static + DeserializeOwned + Unpin + Send, F>(&mut self, target: String, configuration: Option<F>) -> impl Stream<Item = T>
         where F : FnMut(&mut ArgumentConfiguration)
     {
         let invocation_id = self._actions.create_key(target.clone());
@@ -516,13 +591,17 @@ impl SignalRClient {
             invocation = args.build_invocation();
         }
 
-        let _ = self._connection.send(&invocation).await;
+        if let Some(ref mut conn) = self._connection {
+            let _ = conn.send(&invocation).await;
+        }
 
         res
     }
 
     pub fn disconnect(mut self) {
-        self._connection.disconnect();
+        if let Some(ref mut conn) = self._connection {
+            futures::executor::block_on(conn.disconnect());
+        }
     }
 }
 

@@ -5,12 +5,12 @@ use super::actions::UpdatableAction;
 pub(crate) struct CallbackAction {
     #[allow(dead_code)]
     target: String,
-    callback: Box<dyn Fn(InvocationContext) + 'static>,
+    callback: Box<dyn Fn(InvocationContext) + Send + 'static>,
     client: SignalRClient,
 }
 
 impl CallbackAction {
-    pub(crate) fn create(target: String, callback: impl Fn(InvocationContext) + 'static, client: SignalRClient) -> CallbackAction {
+    pub(crate) fn create(target: String, callback: impl Fn(InvocationContext) + Send + 'static, client: SignalRClient) -> CallbackAction {
         CallbackAction {
             target: target,
             callback: Box::new(callback),

@@ -1,4 +1,5 @@
 mod common;
+pub mod reconnection;
 
 #[cfg(target_arch = "wasm32")]
 mod client_wasm;
@@ -14,3 +15,6 @@ pub use client_wasm::CommunicationClient;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use client_tokio::CommunicationClient;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub use client_tokio::ReconnectionContext;

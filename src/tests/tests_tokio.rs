@@ -2,13 +2,28 @@ use futures::StreamExt;
 use log::info;
 use tokio::{spawn, time::Instant};
 
-use crate::{execution::CallbackHandler, tests::TestEntity, SignalRClient};
+use crate::{DisconnectionHandler, ReconnectionHandler, SignalRClient, execution::CallbackHandler, tests::TestEntity};
+
+struct MyDisconnectionHandler {
+
+}
+
+impl DisconnectionHandler for MyDisconnectionHandler {
+    fn on_disconnected(&self, reconnection: ReconnectionHandler) {
+        tokio::spawn(async move {
+            if let Err(e) = reconnection.reconnect_with_policy().await {
+                eprintln!("Failed to reconnect: {}", e);
+            }
+        });
+    }
+}
 
 #[test_log::test(tokio::test)]
 async fn test_service() {
     let mut client = SignalRClient::connect_with("localhost", "test", |c| {
         c.with_port(5220);
         c.unsecure();
+        c.with_disconnection_handler(MyDisconnectionHandler {});
     }).await.unwrap();
 
     let re = client.invoke::<TestEntity>("SingleEntity".to_string()).await;

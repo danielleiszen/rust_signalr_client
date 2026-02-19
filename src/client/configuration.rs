@@ -1,3 +1,5 @@
+use crate::client::client::DisconnectionHandler;
+use crate::communication::reconnection::ReconnectionConfig;
 
 #[derive(Clone)]
 pub(crate) enum Authentication {
@@ -17,6 +19,8 @@ pub struct ConnectionConfiguration {
     _hub: String,
     _port: Option<i32>,
     _authentication: Authentication,
+    _disconnection: Option<Box<dyn DisconnectionHandler + Send + Sync>>,
+    _reconnection: ReconnectionConfig,
 }
 
 impl ConnectionConfiguration {
@@ -27,6 +31,8 @@ impl ConnectionConfiguration {
             _secure: true,
             _hub: hub,
             _port: None,
+            _disconnection: None,
+            _reconnection: ReconnectionConfig::default(),
         }
     }
 
@@ -161,6 +167,27 @@ impl ConnectionConfiguration {
         self
     }
 
+    /// Sets a disconnection handler for the connection.
+    ///
+    /// # Arguments
+    ///
+    /// * `handler` - An implementation of the `DisconnectionHandler` trait to handle disconnection events.
+    ///
+    /// # Returns
+    ///
+    /// * `&ConnectionConfiguration` - Returns a reference to the updated connection configuration.
+    /// # Examples
+    /// ```
+    /// let client = SignalRClient::connect_with("localhost", "test", |c| {
+    ///     c.with_disconnection_handler(MyDisconnectionHandler{});
+    /// }).await.unwrap();
+    /// ```
+    pub fn with_disconnection_handler<Handler: DisconnectionHandler + Send + Sync + 'static>(&mut self, handler: Handler) -> &ConnectionConfiguration {
+        self._disconnection = Some(Box::new(handler));
+
+        self
+    }
+
     pub(crate) fn get_web_url(&self) -> String {
         format!("{}://{}/{}", self.get_http_schema(), self.get_domain(), self._hub)
     }
@@ -194,5 +221,28 @@ impl ConnectionConfiguration {
             Some(port) => format!("{}:{}", self._domain, port),
             None => self._domain.clone()
         }
+    }
+
+    pub(crate)fn get_disconnection_handler(&mut self) -> Option<Box<dyn DisconnectionHandler + Send + Sync>> {
+        let handler =  self._disconnection.take();
+        handler
+    }
+
+    pub(crate) fn get_reconnection_config(&self) -> ReconnectionConfig {
+        self._reconnection.clone()
+    }
+
+    /// Sets the reconnection policy for the connection.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `config` - A `ReconnectionConfig` specifying the policy.
+    /// 
+    /// # Returns
+    /// 
+    /// * `&ConnectionConfiguration` - Returns a reference to the updated connection configuration.
+    pub fn with_reconnection_policy(&mut self, config: ReconnectionConfig) -> &ConnectionConfiguration {
+        self._reconnection = config;
+        self
     }
 }

@@ -55,12 +55,12 @@ pub trait Storage : Clone {
         format!("{}_{}", target, index)
     }
 
-    fn add_callback(&mut self, target: String, callback: impl Fn(InvocationContext) + 'static, client: SignalRClient) {
+    fn add_callback(&mut self, target: String, callback: impl Fn(InvocationContext) + Send + 'static, client: SignalRClient) {
         debug!("Adding a callback for key {}", target);
         self.insert(target.clone(), CallbackAction::create(target.clone(), callback, client));
     }
 
-    fn add_invocation<R: 'static + DeserializeOwned + Unpin>(&mut self, invocation_id: String) -> ManualFuture<R> {
+    fn add_invocation<R: 'static + DeserializeOwned + Unpin + Send>(&mut self, invocation_id: String) -> ManualFuture<R> {
         let (invocation, f) = InvocationAction::<R>::new(invocation_id.clone());
 
         debug!("Inserting invocation for key {}", invocation_id);
@@ -69,7 +69,7 @@ pub trait Storage : Clone {
         f
     }
 
-    fn add_stream<R: 'static + DeserializeOwned + Unpin>(&mut self, invocation_id: String) -> ManualStream<R> {
+    fn add_stream<R: 'static + DeserializeOwned + Unpin + Send>(&mut self, invocation_id: String) -> ManualStream<R> {
         let (stream, f) = EnumerableAction::<R>::new(invocation_id.clone());
 
         self.insert(invocation_id, stream);

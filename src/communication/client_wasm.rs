@@ -83,7 +83,10 @@ impl Communication for CommunicationClient {
         }
     }
 
-    fn disconnect(&mut self) {
+    async fn disconnect(&mut self) {
+        let task = CompletedFuture::new(());
+        task.await;
+
         self.disconnect_internal();
     }    
 }
