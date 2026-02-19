@@ -1,6 +1,6 @@
 [package]
 name = "signalr-client"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 authors = ["Daniel Leiszen <daniel.leiszen@gmail.com>"]
 description = "A Rust library for calling SignalR hubs from a Rust cross-platform application, supporting WASM and non WASM targets."
@@ -33,8 +33,11 @@ wasm-bindgen-futures = "0.4.56"
 wasm-sockets = "1.0.0"
 wasm-timer = "0.2.5"
 async-std = "1.13.2"
+async-std = "1.13.2"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { version = "1.48.0", features = ["full"] }
+tokio-websockets = { version = "0.13.0", features = ["sha1_smol", "fastrand", "client", "native-tls"] }
 tokio = { version = "1.48.0", features = ["full"] }
 tokio-websockets = { version = "0.13.0", features = ["sha1_smol", "fastrand", "client", "native-tls"] }
 tokio-native-tls = "0.3.1"
