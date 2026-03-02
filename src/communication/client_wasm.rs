@@ -1,6 +1,6 @@
 use std::{cell::RefCell, rc::Rc};
 
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_sockets::{ConnectionStatus, PollingClient};
 
@@ -193,7 +193,7 @@ impl CommunicationClient {
                 txt.split(RECORD_SEPARATOR).map(|s| MessageParser::strip_record_separator(s).to_string()).collect()
             },
             wasm_sockets::Message::Binary(_) => {
-                warn!("Received binary message in text mode, ignoring");
+                debug!("Received binary message in text mode, ignoring");
                 Vec::new()
             },
         }

@@ -14,12 +14,75 @@ pub enum MessageType {
     Other = 8,
 }
 
+/// Version 0: only `connection_id`, used directly as `?id=` on the transport URL.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NegotiateResponseV0 {
     pub connection_id: String,
     pub negotiate_version: u8,
     pub available_transports: Vec<TransportSpec>,
+}
+
+/// Version 1: adds `connection_token` which must be used as `?id=` instead of `connection_id`.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NegotiateResponseV1 {
+    pub connection_id: String,
+    pub connection_token: String,
+    pub negotiate_version: u8,
+    pub available_transports: Vec<TransportSpec>,
+}
+
+/// Parsed negotiate response — version is determined from `negotiateVersion` in the JSON.
+#[derive(Debug)]
+pub enum NegotiateResponse {
+    V0(NegotiateResponseV0),
+    V1(NegotiateResponseV1),
+}
+
+/// Helper for version detection during deserialization.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NegotiateVersionProbe {
+    negotiate_version: u8,
+}
+
+impl NegotiateResponse {
+    /// Deserialize from JSON, selecting V0 or V1 based on `negotiateVersion`.
+    pub fn from_json(text: &str) -> Result<Self, serde_json::Error> {
+        let probe: NegotiateVersionProbe = serde_json::from_str(text)?;
+
+        if probe.negotiate_version >= 1 {
+            let v1: NegotiateResponseV1 = serde_json::from_str(text)?;
+            Ok(NegotiateResponse::V1(v1))
+        } else {
+            let v0: NegotiateResponseV0 = serde_json::from_str(text)?;
+            Ok(NegotiateResponse::V0(v0))
+        }
+    }
+
+    /// The query string to append to the transport URL (`?id=<token>`).
+    /// V0 uses `connection_id`; V1 uses `connection_token`.
+    pub fn endpoint_query(&self) -> String {
+        match self {
+            NegotiateResponse::V0(v) => format!("?id={}", v.connection_id),
+            NegotiateResponse::V1(v) => format!("?id={}", v.connection_token),
+        }
+    }
+
+    pub fn connection_id(&self) -> &str {
+        match self {
+            NegotiateResponse::V0(v) => &v.connection_id,
+            NegotiateResponse::V1(v) => &v.connection_id,
+        }
+    }
+
+    pub fn available_transports(&self) -> &[TransportSpec] {
+        match self {
+            NegotiateResponse::V0(v) => &v.available_transports,
+            NegotiateResponse::V1(v) => &v.available_transports,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
