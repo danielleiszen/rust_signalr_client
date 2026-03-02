@@ -1,9 +1,9 @@
 use crate::client::{Authentication, ConnectionConfiguration};
 use crate::execution::UpdatableActionStorage;
 use crate::protocol::hub_protocol::HubProtocolKind;
-use crate::protocol::negotiate::NegotiateResponseV0;
+use crate::protocol::negotiate::NegotiateResponse;
 use base64::{engine::general_purpose, Engine};
-use serde::{de::DeserializeOwned, Serialize};
+use serde::Serialize;
 
 const WEB_SOCKET_TRANSPORT: &str = "WebSockets";
 
@@ -46,25 +46,28 @@ impl HttpClient {
     pub(crate) async fn negotiate(options: ConnectionConfiguration) -> Result<ConnectionData, String> {
         let negotiate_endpoint = format!("{}/negotiate?negotiateVersion=1", options.get_web_url());
         let protocol_kind = options.get_protocol_kind();
-        let negotiation = HttpClient::post::<NegotiateResponseV0>(negotiate_endpoint.clone(), options.get_authentication()).await;
+        let authentication = options.get_authentication();
+        let json_text = HttpClient::post_text(negotiate_endpoint.clone(), authentication.clone()).await;
 
-        if negotiation.is_ok() {
-            let configuration = HttpClient::create_configuration(options.get_socket_url(), negotiation.unwrap(), protocol_kind);
+        match json_text {
+            Ok(text) => {
+                let negotiate = NegotiateResponse::from_json(&text)
+                    .map_err(|e| format!("Failed to parse negotiate response: {e}"))?;
 
-            if configuration.is_some() {
-                Ok(configuration.unwrap())
-            } else {
-                Err(format!("The negotiation concluded no matching communication protocols for {:?} transfer format", protocol_kind.transfer_format()))
+                HttpClient::create_configuration(options.get_socket_url(), negotiate, protocol_kind, &authentication)
+                    .ok_or_else(|| format!(
+                        "The negotiation concluded no matching communication protocols for {:?} transfer format",
+                        protocol_kind.transfer_format()
+                    ))
             }
-        } else {
-            Err(format!("HTTP negotiation with endpoint {} failed {}", negotiate_endpoint, negotiation.unwrap_err().to_string()))
+            Err(e) => Err(format!("HTTP negotiation with endpoint {} failed {}", negotiate_endpoint, e)),
         }
     }
 
-    fn create_configuration(endpoint: String, negotiate: NegotiateResponseV0, protocol_kind: HubProtocolKind) -> Option<ConnectionData> {
+    fn create_configuration(endpoint: String, negotiate: NegotiateResponse, protocol_kind: HubProtocolKind, authentication: &Authentication) -> Option<ConnectionData> {
         let required_format = protocol_kind.transfer_format();
         let fit = negotiate
-            .available_transports
+            .available_transports()
             .iter()
             .find(|i| i.transport == WEB_SOCKET_TRANSPORT)
             .and_then(|i| {
@@ -75,9 +78,18 @@ impl HttpClient {
             .is_some();
 
         if fit {
+            let mut full_endpoint = format!("{}{}", endpoint, negotiate.endpoint_query());
+
+            // Browsers cannot set custom headers on WebSocket connections.
+            // Append the bearer token as a query parameter per the SignalR convention.
+            if let Authentication::Bearer { ref token } = authentication {
+                let separator = if full_endpoint.contains('?') { "&" } else { "?" };
+                full_endpoint = format!("{}{}access_token={}", full_endpoint, separator, token);
+            }
+
             Some(ConnectionData {
-                endpoint,
-                connection_id: negotiate.connection_id,
+                endpoint: full_endpoint,
+                connection_id: negotiate.connection_id().to_string(),
                 protocol_kind,
             })
         } else {
@@ -98,53 +110,37 @@ impl HttpClient {
         format!("Basic {}", &ret)
     }
 
-    pub async fn post<T: 'static + DeserializeOwned + Send>(endpoint: String, authentication: Authentication) -> Result<T, String> {
-        let (s, r) = futures::channel::oneshot::channel::<Result<T, String>>();
+    pub async fn post_text(endpoint: String, authentication: Authentication) -> Result<String, String> {
+        let (s, r) = futures::channel::oneshot::channel::<Result<String, String>>();
 
         let mut request = ehttp::Request::post(endpoint, vec![]);
 
         match authentication {
             Authentication::None => {},
-            Authentication::Basic { user, password } => {
-                request.headers.insert("Authorization", HttpClient::basic_auth(user, password));
+            Authentication::Basic { ref user, ref password } => {
+                request.headers.insert("Authorization", HttpClient::basic_auth(user.clone(), password.clone()));
             },
-            Authentication::Bearer { token } => {
+            Authentication::Bearer { ref token } => {
                 request.headers.insert("Authorization", format!("Bearer {}", token));
             },
         }
 
         ehttp::fetch(request, move |result| {
-            if result.is_ok() {
-                let response = result.ok();
-
-                if response.is_some() {
-                    let json = response.unwrap();
-
-                    if let Some(text) = json.text() {
-                        let nr = serde_json::from_str::<T>(text);
-
-                        if nr.is_ok() {
-                            _ = s.send(Result::Ok(nr.unwrap()));
-                        } else {
-                            _ = s.send(Result::<T, String>::Err(format!("The HTTP response is failed to deserialize: {:?}, {}", nr.err(), text)));
-                        }
+            match result {
+                Ok(response) => {
+                    if let Some(text) = response.text() {
+                        _ = s.send(Ok(text.to_string()));
                     } else {
-                        _ = s.send(Result::<T, String>::Err("The returned json is empty".to_string()));
+                        _ = s.send(Err("The returned response has no text body".to_string()));
                     }
-                } else {
-                    _ = s.send(Result::<T, String>::Err("The response is empty.".to_string()));
                 }
-            } else {
-                _ = s.send(Result::<T, String>::Err(format!("The call failed {:?}", result.err())));
+                Err(e) => {
+                    _ = s.send(Err(format!("The call failed: {e}")));
+                }
             }
         });
 
-        let result = r.await;
-
-        if result.is_ok() {
-            result.unwrap()
-        } else {
-            Result::<T, String>::Err("The request is cancelled.".to_string())
-        }
+        r.await.unwrap_or(Err("The request is cancelled.".to_string()))
     }
+
 }
