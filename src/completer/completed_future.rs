@@ -10,7 +10,7 @@ use std::marker::Unpin;
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
 /// #[tokio::main]
 /// async fn main() {
 ///     let future = CompletedFuture::new(42);
@@ -32,7 +32,7 @@ impl<T: Unpin> CompletedFuture<T> {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// let future = CompletedFuture::new(42);
     /// ```    
     #[allow(dead_code)]

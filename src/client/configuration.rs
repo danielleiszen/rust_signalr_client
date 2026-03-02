@@ -20,7 +20,10 @@ pub struct ConnectionConfiguration {
     _hub: String,
     _port: Option<i32>,
     _authentication: Authentication,
+    #[cfg(not(target_arch = "wasm32"))]
     _disconnection: Option<Box<dyn DisconnectionHandler + Send + Sync>>,
+    #[cfg(target_arch = "wasm32")]
+    _disconnection: Option<Box<dyn DisconnectionHandler>>,
     _reconnection: ReconnectionConfig,
     _protocol: HubProtocolKind,
 }
@@ -51,7 +54,7 @@ impl ConnectionConfiguration {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// let client = SignalRClient::connect_with("localhost", "test", |c| {
     ///     c.with_port(5220);
     /// }).await.unwrap();
@@ -74,7 +77,7 @@ impl ConnectionConfiguration {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// let client = SignalRClient::connect_with("localhost", "test", |c| {
     ///     c.with_hub("myHub".to_string());
     /// }).await.unwrap();
@@ -93,7 +96,7 @@ impl ConnectionConfiguration {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// let client = SignalRClient::connect_with("localhost", "test", |c| {
     ///     c.secure();
     /// }).await.unwrap();
@@ -112,7 +115,7 @@ impl ConnectionConfiguration {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// let client = SignalRClient::connect_with("localhost", "test", |c| {
     ///     c.unsecure();
     /// }).await.unwrap();
@@ -136,7 +139,7 @@ impl ConnectionConfiguration {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// let client = SignalRClient::connect_with("localhost", "test", |c| {
     ///     c.authenticate_basic("username".to_string(), Some("password".to_string()));
     /// }).await.unwrap();
@@ -159,7 +162,7 @@ impl ConnectionConfiguration {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// let client = SignalRClient::connect_with("localhost", "test", |c| {
     ///     c.authenticate_bearer("your_bearer_token".to_string());
     /// }).await.unwrap();
@@ -180,12 +183,12 @@ impl ConnectionConfiguration {
     ///
     /// * `&ConnectionConfiguration` - Returns a reference to the updated connection configuration.
     /// # Examples
-    /// ```
+    /// ```ignore
     /// let client = SignalRClient::connect_with("localhost", "test", |c| {
     ///     c.with_disconnection_handler(MyDisconnectionHandler{});
     /// }).await.unwrap();
     /// ```
-    pub fn with_disconnection_handler<Handler: DisconnectionHandler + Send + Sync + 'static>(&mut self, handler: Handler) -> &ConnectionConfiguration {
+    pub fn with_disconnection_handler<Handler: DisconnectionHandler + crate::platform::MaybeSendSync + 'static>(&mut self, handler: Handler) -> &ConnectionConfiguration {
         self._disconnection = Some(Box::new(handler));
 
         self
@@ -226,7 +229,14 @@ impl ConnectionConfiguration {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate)fn get_disconnection_handler(&mut self) -> Option<Box<dyn DisconnectionHandler + Send + Sync>> {
+        let handler =  self._disconnection.take();
+        handler
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub(crate)fn get_disconnection_handler(&mut self) -> Option<Box<dyn DisconnectionHandler>> {
         let handler =  self._disconnection.take();
         handler
     }

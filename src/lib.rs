@@ -4,6 +4,7 @@ mod execution;
 mod protocol;
 mod client;
 mod communication;
+pub(crate) mod platform;
 
 pub use client::{InvocationContext, SignalRClient, DisconnectionHandler, ReconnectionHandler};
 pub use execution::{ArgumentConfiguration, CallbackHandler};

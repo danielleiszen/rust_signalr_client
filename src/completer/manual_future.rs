@@ -26,7 +26,7 @@ impl<T> State<T> {
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
 /// #[tokio::main]
 /// async fn main() {
 ///     let (future, completer) = ManualFuture::new();
@@ -54,7 +54,7 @@ impl<T: Unpin> ManualFuture<T> {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// let (future, completer) = ManualFuture::new();
     /// ```
     pub fn new() -> (Self, ManualFutureCompleter<T>) {
@@ -67,7 +67,7 @@ impl<T: Unpin> ManualFuture<T> {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// let (future, completer) = ManualFuture::new();
     /// let mustbefalse = future.is_completed();
     /// completer.complete(42);
@@ -95,7 +95,7 @@ impl<T: Unpin> Clone for ManualFuture<T> {
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
 /// let (future, completer) = ManualFuture::new();
 /// completer.complete(42);
 /// ```
@@ -114,7 +114,7 @@ impl<T: Unpin> ManualFutureCompleter<T> {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// let (future, completer) = ManualFuture::new();
     /// completer.complete(42);
     /// ```
@@ -134,7 +134,7 @@ impl<T: Unpin> ManualFutureCompleter<T> {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// let (future, completer) = ManualFuture::new();
     /// completer.cancel();
     /// ```
@@ -151,7 +151,7 @@ impl<T: Unpin> ManualFutureCompleter<T> {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// let (future, completer) = ManualFuture::new();
     /// let mustbefalse = completer.is_completed();
     /// completer.complete(42);

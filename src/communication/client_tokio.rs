@@ -301,28 +301,27 @@ impl Communication for CommunicationClient {
         }
     }
 
-    async fn disconnect(&mut self) {        
+    async fn disconnect(&mut self) {
+        // Check how many CommunicationClient clones share this state.
+        // strong_count includes this instance, so subtract 1 to get "other" references.
+        // Only disconnect when this is the last client using the connection.
+        let other_refs = Arc::strong_count(&self._state) - 1;
+
+        if other_refs > 0 {
+            info!("The underlying connection has {} more references, not disconnecting.", other_refs);
+            return;
+        }
+
         let mut state = self._state.lock().await;
-        let mut dropped = false;
-        
+
         match &*state {
             ConnectionState::NotConnected(reason) => {
                 info!("The client is not connected: {:?}, cannot disconnect", reason);
             },
-            ConnectionState::Connected(mutex) => {
-                let count = Arc::strong_count(mutex) - 1;
-
-                if count == 0 {
-                    info!("The underlying connection is going to be disposed.");                 
-                    dropped = true;
-                } else {
-                    info!("The underlying connection has {} more references, not disconnecting.", count);
-                }
+            ConnectionState::Connected(_) => {
+                info!("The underlying connection is going to be disposed.");
+                *state = ConnectionState::NotConnected(DisconnectionReason::LocalClosed);
             },
-        }
-
-        if dropped {
-            *state = ConnectionState::NotConnected(DisconnectionReason::LocalClosed);
         }
     }    
 }

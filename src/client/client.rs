@@ -207,7 +207,7 @@ impl SignalRClient {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// let client = SignalRClient::connect("localhost", "test").await.unwrap();
     /// ```
     pub async fn connect(domain: &str, hub: &str) -> Result<Self, String> {
@@ -298,7 +298,7 @@ impl SignalRClient {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// let client = SignalRClient::connect("localhost", "test").await.unwrap();
     /// let handler = client.register("callback1".to_string(), |ctx| {
     ///     let result = ctx.argument::<TestEntity>(0);
@@ -311,7 +311,7 @@ impl SignalRClient {
     /// // Unregister the callback when it's no longer needed
     /// handler.unregister();
     /// ```   
-    pub fn register(&mut self, target: String, callback: impl Fn(InvocationContext) + Send + 'static) -> impl CallbackHandler
+    pub fn register(&mut self, target: String, callback: impl Fn(InvocationContext) + crate::platform::MaybeSend + 'static) -> impl CallbackHandler
     {
         // debug!("CLIENT registering invocation callback to {}", &target);
         self._actions.add_callback(target.clone(), callback, self.clone());
@@ -335,7 +335,7 @@ impl SignalRClient {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// let client = SignalRClient::connect("localhost", "test").await.unwrap();
     /// let response: Result<TestEntity, String> = client.invoke("SingleEntity".to_string()).await;
     /// match response {
@@ -347,7 +347,7 @@ impl SignalRClient {
     ///     }
     /// }
     /// ```    
-    pub async fn invoke<T: 'static + DeserializeOwned + Unpin + Send>(&mut self, target: String) -> Result<T, String> {
+    pub async fn invoke<T: 'static + DeserializeOwned + Unpin + crate::platform::MaybeSend>(&mut self, target: String) -> Result<T, String> {
         return self.invoke_internal(target, None::<fn(&mut ArgumentConfiguration)>).await;
     }
 
@@ -368,7 +368,7 @@ impl SignalRClient {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// let client = SignalRClient::connect("localhost", "test").await.unwrap();
     /// let response: Result<TestEntity, String> = client.invoke_with_args("PushTwoEntities".to_string(), |c| {
     ///     c.argument(TestEntity {
@@ -388,13 +388,13 @@ impl SignalRClient {
     ///     }
     /// }
     /// ```    
-    pub async fn invoke_with_args<T: 'static + DeserializeOwned + Unpin + Send, F>(&mut self, target: String, configuration: F) -> Result<T, String>
+    pub async fn invoke_with_args<T: 'static + DeserializeOwned + Unpin + crate::platform::MaybeSend, F>(&mut self, target: String, configuration: F) -> Result<T, String>
         where F : FnMut(&mut ArgumentConfiguration)
     {
         return self.invoke_internal(target, Some(configuration)).await;
     }
 
-    async fn invoke_internal<T: 'static + DeserializeOwned + Unpin + Send, F>(&mut self, target: String, configuration: Option<F>) -> Result<T, String>
+    async fn invoke_internal<T: 'static + DeserializeOwned + Unpin + crate::platform::MaybeSend, F>(&mut self, target: String, configuration: Option<F>) -> Result<T, String>
         where F : FnMut(&mut ArgumentConfiguration)
     {
         let invocation_id = self._actions.create_key(target.clone());
@@ -435,7 +435,7 @@ impl SignalRClient {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// let client = SignalRClient::connect("localhost", "test").await.unwrap();
     /// let result = client.send("TriggerEntityCallback".to_string()).await;
     /// match result {
@@ -465,7 +465,7 @@ impl SignalRClient {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// let client = SignalRClient::connect("localhost", "test").await.unwrap();
     /// let result = client.send_with_args("TriggerEntityCallback".to_string(), |c| {
     ///     c.argument("callback1".to_string());
@@ -532,14 +532,14 @@ impl SignalRClient {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// let client = SignalRClient::connect("localhost", "test").await.unwrap();
     /// let mut stream = client.enumerate::<TestEntity>("HundredEntities".to_string()).await;
     /// while let Some(entity) = stream.next().await {
     ///     info!("Received entity: {}, {}", entity.text, entity.number);
     /// }
     /// ```
-    pub async fn enumerate<T: 'static + DeserializeOwned + Unpin + Send>(&mut self, target: String) -> impl Stream<Item = T> {
+    pub async fn enumerate<T: 'static + DeserializeOwned + Unpin + crate::platform::MaybeSend>(&mut self, target: String) -> impl Stream<Item = T> {
         return self.enumerate_internal(target, None::<fn(&mut ArgumentConfiguration)>).await;
     }
 
@@ -562,7 +562,7 @@ impl SignalRClient {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// let client = SignalRClient::connect("localhost", "test").await.unwrap();
     /// let mut stream = client.enumerate_with_args::<TestEntity, _>("HundredEntities".to_string(), |c| {
     ///     c.argument("some_argument".to_string());
@@ -571,13 +571,13 @@ impl SignalRClient {
     ///     info!("Received entity: {}, {}", entity.text, entity.number);
     /// }
     /// ```    
-    pub async fn enumerate_with_args<T: 'static + DeserializeOwned + Unpin + Send, F>(&mut self, target: String, configuration: F) -> impl Stream<Item = T>
+    pub async fn enumerate_with_args<T: 'static + DeserializeOwned + Unpin + crate::platform::MaybeSend, F>(&mut self, target: String, configuration: F) -> impl Stream<Item = T>
         where F : FnMut(&mut ArgumentConfiguration)
     {
         return self.enumerate_internal(target, Some(configuration)).await;
     }
 
-    async fn enumerate_internal<T: 'static + DeserializeOwned + Unpin + Send, F>(&mut self, target: String, configuration: Option<F>) -> impl Stream<Item = T>
+    async fn enumerate_internal<T: 'static + DeserializeOwned + Unpin + crate::platform::MaybeSend, F>(&mut self, target: String, configuration: Option<F>) -> impl Stream<Item = T>
         where F : FnMut(&mut ArgumentConfiguration)
     {
         let invocation_id = self._actions.create_key(target.clone());

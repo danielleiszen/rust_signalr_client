@@ -5,7 +5,7 @@
 A cross-platform Rust library for calling SignalR hubs, supporting both native (Tokio) and WebAssembly (WASM) targets. Published on crates.io as `signalr-client`.
 
 **Repository**: https://github.com/danielleiszen/rust_signalr_client
-**Version**: 0.2.1
+**Version**: 0.3.0
 **License**: MIT
 
 ## Architecture
@@ -105,7 +105,7 @@ The `dotnet/SignalRTestService/` directory contains an ASP.NET Core SignalR hub 
 
 ## Known Issues
 
-- **Clone + Drop bug**: `SignalRClient::drop()` calls `disconnect()` which checks `Arc::strong_count` on the inner `CommunicationConnection`, but since `CommunicationClient` clones share the same `_state` Arc (not the inner connection Arc), the ref count check is incorrect. Dropping a cloned client can disconnect the shared connection. This causes the test to fail at the callback section after `drop(secondclient)`.
+- The `send_direct` path (used by callback `ctx.complete()`) doesn't yet support MessagePack encoding
 
 ## Dependencies
 

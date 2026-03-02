@@ -2,15 +2,20 @@ use crate::{client::SignalRClient, protocol::{hub_protocol::MessagePayload, invo
 use crate::protocol::messages::MessageParser;
 use super::actions::UpdatableAction;
 
+#[cfg(not(target_arch = "wasm32"))]
+type CallbackFn = dyn Fn(InvocationContext) + Send + 'static;
+#[cfg(target_arch = "wasm32")]
+type CallbackFn = dyn Fn(InvocationContext) + 'static;
+
 pub(crate) struct CallbackAction {
     #[allow(dead_code)]
     target: String,
-    callback: Box<dyn Fn(InvocationContext) + Send + 'static>,
+    callback: Box<CallbackFn>,
     client: SignalRClient,
 }
 
 impl CallbackAction {
-    pub(crate) fn create(target: String, callback: impl Fn(InvocationContext) + Send + 'static, client: SignalRClient) -> CallbackAction {
+    pub(crate) fn create(target: String, callback: impl Fn(InvocationContext) + crate::platform::MaybeSend + 'static, client: SignalRClient) -> CallbackAction {
         CallbackAction {
             target: target,
             callback: Box::new(callback),

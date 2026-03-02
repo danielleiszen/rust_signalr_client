@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 /// Defines the behavior for reconnection attempts.
-pub trait ReconnectionPolicy: Send + Sync {
+pub trait ReconnectionPolicy: crate::platform::MaybeSendSync {
     /// Returns the delay before the next reconnection attempt.
     /// Returns `None` if no more attempts should be made.
     fn next_retry_delay(&self, retry_count: u32, elapsed_milliseconds: u64) -> Option<Duration>;
