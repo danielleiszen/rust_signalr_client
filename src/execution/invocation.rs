@@ -50,7 +50,7 @@ impl<R: DeserializeOwned + Unpin> Drop for InvocationAction<R> {
     }
 }
 
-impl<R: DeserializeOwned + Unpin + Send> UpdatableAction for InvocationAction<R> {
+impl<R: DeserializeOwned + Unpin + crate::platform::MaybeSend> UpdatableAction for InvocationAction<R> {
     fn update_with(&mut self, message: &MessagePayload, message_type: MessageType) {
         match message_type {
             MessageType::Completion => {

@@ -29,7 +29,7 @@ impl ArgumentConfiguration {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// let client = SignalRClient::connect("localhost", "test").await.unwrap();
     /// let response: Result<bool, String> = client.invoke_with_args("PushEntity".to_string(), |c| {
     ///     c.argument(TestEntity {

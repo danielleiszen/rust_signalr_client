@@ -34,7 +34,7 @@ impl<R: DeserializeOwned + Unpin> Drop for EnumerableAction<R> {
     }
 }
 
-impl<R: DeserializeOwned + Unpin + Send> UpdatableAction for EnumerableAction<R> {
+impl<R: DeserializeOwned + Unpin + crate::platform::MaybeSend> UpdatableAction for EnumerableAction<R> {
     fn update_with(&mut self, message: &MessagePayload, message_type: MessageType) {
         match message_type {
             MessageType::StreamItem => {

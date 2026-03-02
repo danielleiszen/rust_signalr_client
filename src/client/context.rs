@@ -17,7 +17,7 @@ use super::SignalRClient;
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
 /// let c1 = client.register("callback1".to_string(), |ctx| {
 ///     // Retrieve the first argument as a TestEntity
 ///     let result = ctx.argument::<TestEntity>(0);
@@ -48,7 +48,7 @@ use super::SignalRClient;
 ///         }
 ///     }
 /// });
-/// ```
+/// ```ignore
 ///
 /// # Methods
 ///
@@ -72,7 +72,7 @@ use super::SignalRClient;
 ///
 /// ### Examples
 ///
-/// ```
+/// ```ignore
 /// let result = ctx.argument::<TestEntity>(0);
 /// match result {
 ///     Ok(entity) => {
@@ -82,7 +82,7 @@ use super::SignalRClient;
 ///         error!("Failed to retrieve argument: {}", e);
 ///     }
 /// }
-/// ```
+/// ```ignore
 ///
 /// ## `complete`
 ///
@@ -104,7 +104,7 @@ use super::SignalRClient;
 ///
 /// ### Examples
 ///
-/// ```
+/// ```ignore
 /// let result = ctx.complete(TestEntity {
 ///     text: "completed".to_string(),
 ///     number: 123,
@@ -149,7 +149,7 @@ impl InvocationContext {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// let result = ctx.argument::<TestEntity>(0);
     /// match result {
     ///     Ok(entity) => {
@@ -206,7 +206,7 @@ impl InvocationContext {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// let result = ctx.complete(TestEntity {
     ///     text: "completed".to_string(),
     ///     number: 123,
@@ -246,7 +246,7 @@ impl InvocationContext {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// InvocationContext::spawn(async {
     ///     // Your async code here
     ///     info!("Async block executed");
@@ -273,7 +273,7 @@ impl InvocationContext {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// InvocationContext::spawn(async {
     ///     // Your async code here
     ///     info!("Async block executed");

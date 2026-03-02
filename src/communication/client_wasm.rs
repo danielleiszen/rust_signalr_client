@@ -232,7 +232,7 @@ impl CommunicationClient {
     fn send_binary_internal(&self, data: Vec<u8>) -> Result<(), String> {
         if self._client.is_some() {
             let bclient = self._client.as_ref().unwrap().borrow();
-            return bclient.send_binary(&data).map_err(|e| e.as_string().unwrap());
+            return bclient.send_binary(data).map_err(|e| e.as_string().unwrap());
         } else {
             return Err(format!("The client is not connected. Cannot send data"));
         }
