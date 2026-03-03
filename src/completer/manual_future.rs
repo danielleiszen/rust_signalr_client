@@ -143,6 +143,7 @@ impl<T: Unpin> ManualFutureCompleter<T> {
         let mut state = self.state.lock().unwrap();
 
         match std::mem::replace(&mut *state, State::Complete(None)) {
+            State::Waiting(w) => w.wake(),
             _ => {},
         }
     }
