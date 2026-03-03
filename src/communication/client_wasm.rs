@@ -249,16 +249,44 @@ impl CommunicationClient {
                     connected.complete(true);
                 },
                 ConnectionState::Handshake(handshake) => {
-                    // Handshake is always JSON text, even for MessagePack
-                    let messages = CommunicationClient::receive_text_messages(client);
+                    // Drain ALL messages from the buffer in one call.
+                    // The handshake response is JSON even for MessagePack, but
+                    // ASP.NET Core may send it as a binary WebSocket frame when
+                    // MessagePack is negotiated — so we must check both.
+                    let raw_messages = client.borrow_mut().receive();
 
-                    if messages.len() == 1 {
-                        let hs = MessageParser::parse_message::<HandshakeResponse>(messages.first().unwrap());
+                    let mut handshake_text: Option<String> = None;
+                    for msg in &raw_messages {
+                        if handshake_text.is_some() { break; }
+                        match msg {
+                            wasm_sockets::Message::Text(t) => {
+                                let stripped = MessageParser::strip_record_separator(t).to_string();
+                                if !stripped.is_empty() {
+                                    handshake_text = Some(stripped);
+                                }
+                            }
+                            wasm_sockets::Message::Binary(b) => {
+                                if let Ok(text) = std::str::from_utf8(b) {
+                                    let stripped = MessageParser::strip_record_separator(text).to_string();
+                                    if !stripped.is_empty() {
+                                        handshake_text = Some(stripped);
+                                    }
+                                }
+                            }
+                        }
+                    }
 
-                        if hs.is_ok() {
-                            handshake.complete(true);
-                        } else {
-                            handshake.complete(false);
+                    if let Some(ref hs_text) = handshake_text {
+                        let hs = MessageParser::parse_message::<HandshakeResponse>(hs_text);
+                        match hs {
+                            Ok(_) => {
+                                info!("Handshake completed");
+                                handshake.complete(true);
+                            }
+                            Err(e) => {
+                                error!("Handshake response parse failed: {}. Raw: {:?}", e, hs_text);
+                                handshake.complete(false);
+                            }
                         }
                     }
                 },

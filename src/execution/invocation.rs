@@ -8,11 +8,11 @@ use super::actions::UpdatableAction;
 
 pub(crate) struct InvocationAction<R: DeserializeOwned + Unpin> {
     invocation_id: String,
-    completer: Option<ManualFutureCompleter<R>>
+    completer: Option<ManualFutureCompleter<Result<R, String>>>
 }
 
 impl<R: DeserializeOwned + Unpin> InvocationAction<R> {
-    pub fn new(invocation_id: String) -> (Self, ManualFuture<R>) {
+    pub fn new(invocation_id: String) -> (Self, ManualFuture<Result<R, String>>) {
         let (f, c) = ManualFuture::new();
         let invocation = InvocationAction {
             invocation_id: invocation_id,
@@ -27,12 +27,16 @@ impl<R: DeserializeOwned + Unpin> InvocationAction<R> {
         self.completer.is_some()
     }
 
-    pub fn complete(&mut self, result: R) {
-        info!("Trying to get future completer form Invocation Action");
+    pub fn complete_ok(&mut self, result: R) {
+        info!("Completing invocation {} with result", self.invocation_id);
         let completer = self.completer.take().unwrap();
-        info!("Future completer is taken");
-        completer.complete(result);
-        info!("Future completer is completed");
+        completer.complete(Ok(result));
+    }
+
+    pub fn complete_err(&mut self, error: String) {
+        error!("Completing invocation {} with error: {}", self.invocation_id, error);
+        let completer = self.completer.take().unwrap();
+        completer.complete(Err(error));
     }
 
     fn dispose_internal(&mut self) {
@@ -59,12 +63,12 @@ impl<R: DeserializeOwned + Unpin + crate::platform::MaybeSend> UpdatableAction f
                         if let Ok(completition) = MessageParser::parse_message::<Completion<R>>(s) {
                             if completition.is_result() {
                                 info!("Completition is parsed");
-                                self.complete(completition.unwrap_result());
+                                self.complete_ok(completition.unwrap_result());
                             } else {
-                                error!("Cannot complete invocation {}, error: {}", self.invocation_id, completition.unwrap_error());
+                                self.complete_err(completition.unwrap_error());
                             }
                         } else {
-                            error!("Cannot parse completition: {}", s);
+                            self.complete_err(format!("Cannot parse completion: {}", s));
                         }
                     },
                     #[cfg(feature = "messagepack")]
@@ -78,7 +82,7 @@ impl<R: DeserializeOwned + Unpin + crate::platform::MaybeSend> UpdatableAction f
                                                 let err = comp.payload
                                                     .and_then(|v| v.as_str().map(|s| s.to_string()))
                                                     .unwrap_or_else(|| "Unknown error".to_string());
-                                                error!("Cannot complete invocation {}, error: {}", self.invocation_id, err);
+                                                self.complete_err(err);
                                             },
                                             2 => {
                                                 // Void completion - no result to deliver
@@ -88,19 +92,21 @@ impl<R: DeserializeOwned + Unpin + crate::platform::MaybeSend> UpdatableAction f
                                                     match crate::protocol::msgpack::value_to_type::<R>(&val) {
                                                         Ok(result) => {
                                                             info!("Completition is parsed");
-                                                            self.complete(result);
+                                                            self.complete_ok(result);
                                                         },
-                                                        Err(e) => error!("Cannot deserialize completion result: {}", e),
+                                                        Err(e) => self.complete_err(format!("Cannot deserialize completion result: {}", e)),
                                                     }
+                                                } else {
+                                                    self.complete_err("Completion has no result payload".to_string());
                                                 }
                                             },
-                                            _ => error!("Unknown ResultKind: {}", comp.result_kind),
+                                            _ => self.complete_err(format!("Unknown ResultKind: {}", comp.result_kind)),
                                         }
                                     },
-                                    Err(e) => error!("Cannot parse msgpack completion: {}", e),
+                                    Err(e) => self.complete_err(format!("Cannot parse msgpack completion: {}", e)),
                                 }
                             },
-                            Err(e) => error!("Cannot parse msgpack message: {}", e),
+                            Err(e) => self.complete_err(format!("Cannot parse msgpack message: {}", e)),
                         }
                     },
                 }

@@ -60,7 +60,7 @@ pub trait Storage : Clone {
         self.insert(target.clone(), CallbackAction::create(target.clone(), callback, client));
     }
 
-    fn add_invocation<R: 'static + DeserializeOwned + Unpin + crate::platform::MaybeSend>(&mut self, invocation_id: String) -> ManualFuture<R> {
+    fn add_invocation<R: 'static + DeserializeOwned + Unpin + crate::platform::MaybeSend>(&mut self, invocation_id: String) -> ManualFuture<Result<R, String>> {
         let (invocation, f) = InvocationAction::<R>::new(invocation_id.clone());
 
         debug!("Inserting invocation for key {}", invocation_id);

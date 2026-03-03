@@ -414,7 +414,7 @@ impl SignalRClient {
             let res = Self::send_invocation(conn, &invocation).await;
 
             if res.is_ok() {
-                Ok(ret.await)
+                ret.await
             } else {
                 Err(res.err().unwrap())
             }
